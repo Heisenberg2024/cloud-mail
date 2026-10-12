@@ -1,101 +1,122 @@
 import orm from '../entity/orm';
 import email from '../entity/email';
 import settingService from './setting-service';
-import dayjs from 'dayjs';
-import utc from 'dayjs/plugin/utc';
-import timezone from 'dayjs/plugin/timezone';
-dayjs.extend(utc);
-dayjs.extend(timezone);
 import { eq } from 'drizzle-orm';
 import jwtUtils from '../utils/jwt-utils';
 import emailMsgTemplate from '../template/email-msg';
 import emailTextTemplate from '../template/email-text';
 import emailHtmlTemplate from '../template/email-html';
-import verifyUtils from '../utils/verify-utils';
-import domainUtils from "../utils/domain-uitls";
 
-const telegramService = {
-
-	async getEmailContent(c, params) {
-
-		const { token } = params
-
-		const result = await jwtUtils.verifyToken(c, token);
-
-		if (!result) {
-			return emailTextTemplate('Access denied')
-		}
-
-		const emailRow = await orm(c).select().from(email).where(eq(email.emailId, result.emailId)).get();
-
-		if (emailRow) {
-
-			if (emailRow.content) {
-				const { r2Domain } = await settingService.query(c);
-				return emailHtmlTemplate(emailRow.content || '', r2Domain)
-			} else {
-				return emailTextTemplate(emailRow.text || '')
-			}
-
-		} else {
-			return emailTextTemplate('The email does not exist')
-		}
-
-	},
-
-	async sendEmailToBot(c, email) {
-
-		const { tgBotToken, tgChatId, customDomain, tgMsgTo, tgMsgFrom, tgMsgText } = await settingService.query(c);
-
-		const tgChatIds = tgChatId.split(',');
-
-		const jwtToken = await jwtUtils.generateToken(c, { emailId: email.emailId })
-
-		const webAppUrl = customDomain ? `${domainUtils.toOssDomain(customDomain)}/api/telegram/getEmail/${jwtToken}` : 'https://www.cloudflare.com/404'
-		const inlineKeyboard = [
-			[
-				{
-					text: 'View',
-					web_app: { url: webAppUrl }
-				}
-			]
-		];
-
-		if (email.code) {
-			inlineKeyboard.push([
-				{
-					text: email.code,
-					copy_text: { text: email.code }
-				}
-			]);
-		}
-
-		await Promise.all(tgChatIds.map(async chatId => {
-			try {
-				const res = await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json'
-					},
-					body: JSON.stringify({
-						chat_id: chatId,
-						parse_mode: 'HTML',
-						text: emailMsgTemplate(email, tgMsgTo, tgMsgFrom, tgMsgText),
-						reply_markup: {
-							inline_keyboard: inlineKeyboard
-						}
-					})
-				});
-				if (!res.ok) {
-					console.error(`转发 Telegram 失败 status: ${res.status} response: ${await res.text()}`);
-				}
-			} catch (e) {
-				console.error(`转发 Telegram 失败:`, e.message);
-			}
-		}));
-
+async function telegramRequest(config, method, body = {}) {
+	try {
+		const response = await fetch(`https://api.telegram.org/bot${config.token}/${method}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+			redirect: 'error',
+			signal: AbortSignal.timeout(5000),
+		});
+		const data = await response.json();
+		return {
+			ok: response.ok && data.ok === true,
+			error: response.ok && data.ok ? '' : `Telegram ${method} failed (HTTP ${response.status})`,
+		};
+	} catch {
+		return { ok: false, error: `Telegram ${method} network/timeout failure` };
 	}
-
 }
 
-export default telegramService
+const telegramService = {
+	async getEmailContent(c, params) {
+		const payload = await jwtUtils.verifyToken(c, params.token);
+		if (!payload || payload.purpose !== 'mail-view' || !payload.exp || payload.exp <= Math.floor(Date.now() / 1000))
+			return emailTextTemplate('Access denied');
+		const destination = await c.env.db
+			.prepare("SELECT enabled FROM push_destination WHERE id=? AND type='telegram'")
+			.bind(payload.destinationId)
+			.first();
+		const emailRow = await orm(c).select().from(email).where(eq(email.emailId, payload.emailId)).get();
+		if (
+			!destination?.enabled ||
+			!emailRow ||
+			emailRow.isDel ||
+			emailRow.accountId !== payload.accountId ||
+			emailRow.userId !== payload.userId
+		)
+			return emailTextTemplate('Access denied');
+		if (payload.accountId) {
+			const owner = await c.env.db
+				.prepare(
+					`SELECT a.account_id FROM account a JOIN user u ON u.user_id=a.user_id
+			 WHERE a.account_id=? AND a.user_id=? AND a.is_del=0 AND u.is_del=0`,
+				)
+				.bind(payload.accountId, payload.userId)
+				.first();
+			if (!owner) return emailTextTemplate('Access denied');
+		} else if (payload.userId !== 0 || emailRow.status !== 7) return emailTextTemplate('Access denied');
+		if (emailRow.content) {
+			const { r2Domain } = await settingService.query(c);
+			return emailHtmlTemplate(emailRow.content, r2Domain);
+		}
+		return emailTextTemplate(emailRow.text || '');
+	},
+	async sendEmailToBot(c, emailRow, destination) {
+		const config = destination.config;
+		const keyboard = [];
+		if (config.viewLink && config.customDomain) {
+			const token = await jwtUtils.generateToken(
+				c,
+				{
+					purpose: 'mail-view',
+					emailId: emailRow.emailId,
+					accountId: emailRow.accountId,
+					userId: emailRow.userId,
+					destinationId: destination.id,
+				},
+				900,
+			);
+			keyboard.push([{ text: 'View (15 min)', web_app: { url: `${config.customDomain}/api/telegram/getEmail/${token}` } }]);
+		}
+		if (config.showCode && emailRow.code && emailRow.code.length <= 256)
+			keyboard.push([{ text: emailRow.code, copy_text: { text: emailRow.code } }]);
+		const results = await Promise.all(
+			config.chatIds.map((chatId) =>
+				telegramRequest(config, 'sendMessage', {
+					chat_id: chatId,
+					parse_mode: 'HTML',
+					text: emailMsgTemplate(emailRow, config.to, config.from, config.text),
+					...(keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+				}),
+			),
+		);
+		return {
+			status: results.every((r) => r.ok) ? 'success' : results.some((r) => r.ok) ? 'partial' : 'failed',
+			attempts: 1,
+			error: results
+				.map((r, i) => (r.ok ? '' : `Chat ${config.chatIds[i]}: ${r.error}`))
+				.filter(Boolean)
+				.join('; ')
+				.slice(0, 300),
+		};
+	},
+	async test(config) {
+		const token = await telegramRequest(config, 'getMe');
+		if (!token.ok) return { tokenValid: false, chats: [], status: 'failed', error: token.error, attempts: 1 };
+		const chats = await Promise.all(
+			config.chatIds.map(async (chatId) => {
+				const chat = await telegramRequest(config, 'getChat', { chat_id: chatId });
+				if (!chat.ok) return { chatId, chatValid: false, sent: false, error: chat.error };
+				const sent = await telegramRequest(config, 'sendMessage', { chat_id: chatId, text: 'Cloud Mail connection test' });
+				return { chatId, chatValid: true, sent: sent.ok, error: sent.error };
+			}),
+		);
+		return {
+			tokenValid: true,
+			chats,
+			status: chats.every((c) => c.sent) ? 'success' : chats.some((c) => c.sent) ? 'partial' : 'failed',
+			attempts: 1,
+			error: chats.some((c) => !c.sent) ? 'Some Chat IDs failed; inspect test results' : '',
+		};
+	},
+};
+export default telegramService;

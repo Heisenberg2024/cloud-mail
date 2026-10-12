@@ -149,6 +149,7 @@ import {AccountAllReceiveEnum} from "@/enums/account-enum.js";
 const {t} = useI18n();
 const userStore = useUserStore();
 const accountStore = useAccountStore();
+watch(() => accountStore.ownershipVersion, () => refresh());
 const settingStore = useSettingStore();
 const emailStore = useEmailStore();
 const showAdd = ref(false)

@@ -3,6 +3,7 @@
 export const useAccountStore = defineStore('account', {
     state: () => ({
         currentAccountId: 0,
+        ownershipVersion: 0,
         currentAccount: {},
         changeUserAccountName: ''
     })

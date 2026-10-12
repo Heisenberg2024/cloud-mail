@@ -5,6 +5,7 @@ const TRUNCATED_SUFFIX = '...';
 
 function escapeHtml(text = '') {
 	return text
+		.replace(/&/g, '&amp;')
 		.replace(/</g, '&lt;')
 		.replace(/>/g, '&gt;');
 }
@@ -18,23 +19,23 @@ function truncateText(text, maxLength) {
 		return TRUNCATED_SUFFIX.slice(0, maxLength);
 	}
 
-	return text.slice(0, maxLength - TRUNCATED_SUFFIX.length) + TRUNCATED_SUFFIX;
+	return text.slice(0, maxLength - TRUNCATED_SUFFIX.length).replace(/&[^;]*$/, '') + TRUNCATED_SUFFIX;
 }
 
 export default function emailMsgTemplate(email, tgMsgTo, tgMsgFrom, tgMsgText) {
 
-	let template = `<b>${escapeHtml(email.subject || '')}</b>`
+	let template = `<b>${escapeHtml(truncateText(email.subject || '',1000))}</b>`
 
 		if (tgMsgFrom === 'only-name') {
 			template += `
 
-From\u200B：${escapeHtml(email.name || '')}`
+From\u200B：${escapeHtml(truncateText(email.name || '',255))}`
 		}
 
 		if (tgMsgFrom === 'show') {
 			template += `
 
-From\u200B：${escapeHtml(email.name || '')}  &lt;${escapeHtml(email.sendEmail || '')}&gt;`
+From\u200B：${escapeHtml(truncateText(email.name || '',255))}  &lt;${escapeHtml(email.sendEmail || '')}&gt;`
 		}
 
 		if(tgMsgTo === 'show' && tgMsgFrom === 'hide') {

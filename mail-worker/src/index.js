@@ -1,4 +1,6 @@
 import app from './hono/webs';
+import pushService from './service/push-service';
+import { ensureV34Schema } from './init/upgrade-v34';
 import { email } from './email/email';
 import userService from './service/user-service';
 import verifyRecordService from './service/verify-record-service';
@@ -12,6 +14,9 @@ export default {
 		const url = new URL(req.url)
 
 		if (url.pathname.startsWith('/api/')) {
+			if (!url.pathname.startsWith('/api/init/')) {
+				try { await ensureV34Schema({env}); } catch { return Response.json({code:502,message:'Initialize or upgrade the database / 请初始化或升级数据库'}); }
+			}
 			url.pathname = url.pathname.replace('/api', '')
 			req = new Request(url.toString(), req)
 			return app.fetch(req, env, ctx);
@@ -30,10 +35,12 @@ export default {
 			return;
 		}
 
+		await ensureV34Schema({env});
 		await verifyRecordService.clearRecord({ env })
 		await userService.resetDaySendCount({ env })
 		await emailService.completeReceiveAll({ env })
 		await emailService.autoClean({ env })
+		await pushService.cleanup({ env })
 		await analysisService.refreshEchartsCache({ env })
 		await oauthService.clearNoBindOathUser({ env })
 	},

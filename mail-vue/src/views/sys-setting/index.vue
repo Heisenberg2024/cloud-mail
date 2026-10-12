@@ -231,46 +231,9 @@
             </div>
           </div>
 
-          <div class="settings-card">
-            <div class="card-title">{{ $t('emailPush') }}</div>
-            <div class="card-content">
-              <div class="setting-item">
-                <div><span>{{ $t('tgBot') }}</span></div>
-                <div class="forward">
-                  <span>{{ setting.tgBotStatus === 0 ? $t('enabled') : $t('disabled') }}</span>
-                  <el-button class="opt-button" size="small" type="primary" @click="openTgSetting">
-                    <Icon icon="fluent:settings-48-regular" width="18" height="18"/>
-                  </el-button>
-                </div>
-              </div>
-              <div class="setting-item">
-                <div><span>{{ $t('otherEmail') }}</span></div>
-                <div class="forward">
-                  <span>{{ setting.forwardStatus === 0 ? $t('enabled') : $t('disabled') }}</span>
-                  <el-button class="opt-button" size="small" type="primary" @click="openThirdEmailSetting">
-                    <Icon icon="fluent:settings-48-regular" width="18" height="18"/>
-                  </el-button>
-                </div>
-              </div>
-              <div class="setting-item">
-                <div><span>{{ $t('webhook') }}</span></div>
-                <div class="forward">
-                  <span>{{ setting.webhookStatus === 0 ? $t('enabled') : $t('disabled') }}</span>
-                  <el-button class="opt-button" size="small" type="primary" @click="openWebhookSetting">
-                    <Icon icon="fluent:settings-48-regular" width="18" height="18"/>
-                  </el-button>
-                </div>
-              </div>
-              <div class="setting-item">
-                <div><span>{{ $t('forwardingRules') }}</span></div>
-                <div class="forward">
-                  <span>{{ setting.ruleType === 0 ? $t('forwardAll') : $t('rules') }}</span>
-                  <el-button class="opt-button" size="small" type="primary" @click="openForwardRules">
-                    <Icon icon="fluent:settings-48-regular" width="18" height="18"/>
-                  </el-button>
-                </div>
-              </div>
-            </div>
+          <div class="settings-card" v-if="userStore.user.type===0">
+            <div class="card-title">{{ $t('pushManagement') }}</div>
+            <div class="card-content"><push-manager/></div>
           </div>
 
           <!-- Object Storage Card -->
@@ -581,163 +544,6 @@
           <el-button type="primary" :loading="settingLoading" @click="saveBackground">{{ $t('save') }}</el-button>
         </div>
       </el-dialog>
-      <el-dialog
-          v-model="tgSettingShow"
-          class="forward-dialog"
-      >
-        <template #header>
-          <div class="forward-head">
-            <span class="forward-set-title">{{ $t('tgBot') }}</span>
-            <el-tooltip effect="dark" :content="$t('tgBotDesc')">
-              <Icon class="warning" icon="fe:warning" width="18" height="18"/>
-            </el-tooltip>
-          </div>
-        </template>
-        <div class="forward-set-body">
-          <el-input :placeholder="setting.tgBotToken || $t('tgBotToken')" v-model="tgBotToken" @keyup.enter="tgBotSave"></el-input>
-          <el-input-tag tag-type="warning" :placeholder="$t('toBotTokenDesc')" v-model="tgChatId"
-                        @add-tag="addChatTag"></el-input-tag>
-          <el-input tag-type="warning" :placeholder="$t('customDomainDesc')" v-model="customDomain" @keyup.enter="tgBotSave"></el-input>
-          <div class="tg-msg-label">
-            <span>{{t('from')}}</span>
-            <el-select  v-model="tgMsgFrom" >
-              <el-option
-                  v-for="item in tgMsgFromOption"
-                  :key="item.value"
-                  :label="item.label"
-                  :value="item.value"
-              />
-            </el-select>
-          </div>
-          <div class="tg-msg-label">
-            <span>{{t('recipient')}}</span>
-            <el-select  v-model="tgMsgTo" >
-              <el-option
-                  v-for="item in tgMsgToOption"
-                  :key="item.value"
-                  :label="item.label"
-                  :value="item.value"
-              />
-            </el-select>
-          </div>
-          <div class="tg-msg-label">
-            <span>{{t('emailText')}}</span>
-            <el-select  v-model="tgMsgText" >
-              <el-option
-                  v-for="item in tgMsgTextOption"
-                  :key="item.value"
-                  :label="item.label"
-                  :value="item.value"
-              />
-            </el-select>
-          </div>
-        </div>
-        <template #footer>
-          <div class="dialog-footer">
-            <el-switch v-model="tgBotStatus" :active-value="0" :inactive-value="1" :active-text="$t('enable')"
-                       :inactive-text="$t('disable')"/>
-            <el-button :loading="settingLoading" type="primary" @click="tgBotSave">
-              {{ $t('save') }}
-            </el-button>
-          </div>
-        </template>
-      </el-dialog>
-      <el-dialog
-          v-model="thirdEmailShow"
-          class="forward-dialog"
-      >
-        <template #header>
-          <div class="forward-head">
-            <span class="forward-set-title">{{ $t('otherEmail') }}</span>
-            <el-tooltip effect="dark" :content="$t('otherEmailDesc')">
-              <Icon class="warning" icon="fe:warning" width="18" height="18"/>
-            </el-tooltip>
-          </div>
-        </template>
-        <div class="forward-set-body">
-          <el-input-tag tag-type="warning" :placeholder="$t('otherEmailInputDesc')" v-model="forwardEmail"
-                        @add-tag="emailAddTag"></el-input-tag>
-        </div>
-        <template #footer>
-          <div class="dialog-footer">
-            <el-switch v-model="forwardStatus" :active-value="0" :inactive-value="1" :active-text="$t('enable')"
-                       :inactive-text="$t('disable')"/>
-            <el-button :loading="settingLoading" type="primary" @click="forwardEmailSave">
-              {{ $t('save') }}
-            </el-button>
-          </div>
-        </template>
-      </el-dialog>
-      <el-dialog
-          v-model="webhookShow"
-          class="forward-dialog"
-          @closed="webhookFormatShow = false"
-      >
-        <template #header>
-          <div class="forward-head">
-            <span class="forward-set-title">{{ $t('webhook') }}</span>
-            <el-tooltip effect="dark" :content="$t('webhookDesc')">
-              <Icon class="warning" icon="fe:warning" width="18" height="18"/>
-            </el-tooltip>
-          </div>
-        </template>
-        <div class="forward-set-body">
-          <el-input :placeholder="$t('webhookUrl')" v-model="webhookUrl" @keyup.enter="webhookSave"></el-input>
-          <el-input :placeholder="$t('webhookSecret')" v-model="webhookSecret" @keyup.enter="webhookSave"></el-input>
-          <div class="tg-msg-label">
-            <span>{{ t('webhookRetry') }}</span>
-            <el-input-number v-model="webhookRetry" :min="0" :max="5" controls-position="right"/>
-          </div>
-          <div v-show="webhookFormatShow" class="webhook-format">
-            <pre>Content-Type: application/json
-Authorization: &lt;secret&gt;</pre>
-            <pre>{{ webhookPayloadExample }}</pre>
-          </div>
-        </div>
-        <template #footer>
-          <div class="dialog-footer">
-            <el-switch v-model="webhookStatus" :active-value="0" :inactive-value="1" :active-text="$t('enable')"
-                       :inactive-text="$t('disable')"/>
-            <div class="webhook-footer-right">
-              <div class="webhook-format-title" @click="webhookFormatShow = !webhookFormatShow">
-                <span>{{ $t('webhookFormat') }}</span>
-                <Icon class="webhook-format-icon" :class="{ open: webhookFormatShow }" icon="mingcute:down-small-fill" width="18" height="18"/>
-              </div>
-              <el-button :loading="settingLoading" type="primary" @click="webhookSave">
-                {{ $t('save') }}
-              </el-button>
-            </div>
-          </div>
-        </template>
-      </el-dialog>
-      <el-dialog
-          v-model="forwardRulesShow"
-          class="forward-dialog"
-      >
-        <template #header>
-          <div class="forward-head">
-            <span class="forward-set-title">{{ $t('forwardingRules') }}</span>
-            <el-tooltip effect="dark" :content="$t('forwardingRulesDesc')">
-              <Icon class="warning" icon="fe:warning" width="18" height="18"/>
-            </el-tooltip>
-          </div>
-        </template>
-        <div class="forward-set-body">
-          <el-input-tag :placeholder="$t('ruleEmailsInputDesc')" tag-type="success" v-model="ruleEmail"
-                        @add-tag="ruleEmailAddTag"/>
-        </div>
-        <template #footer>
-          <div class="dialog-footer">
-            <el-radio-group v-model="ruleType">
-              <el-radio :value="0">{{ $t('forwardAll') }}</el-radio>
-              <el-radio :value="1">{{ $t('rules') }}</el-radio>
-            </el-radio-group>
-            <el-button :loading="settingLoading" type="primary" @click="ruleEmailSave">
-              {{ $t('save') }}
-            </el-button>
-          </div>
-        </template>
-      </el-dialog>
       <el-dialog class="resend-table" v-model="showResendList" :title="$t('resendTokenList')">
         <el-table :data="resendList">
           <el-table-column :min-width="emailColumnWidth" property="key" :label="$t('domain')"
@@ -932,6 +738,7 @@ Authorization: &lt;secret&gt;</pre>
 </template>
 
 <script setup>
+import PushManager from '@/components/push-manager/index.vue';
 import {computed, defineOptions, nextTick, reactive, ref} from "vue";
 import {deleteBackground, setBackground, setBlackList, settingQuery, settingSet} from "@/request/setting.js";
 import {useSettingStore} from "@/store/setting.js";
@@ -970,11 +777,7 @@ const autoCleanShow = ref(false)
 const aiCodeFilterShow = ref(false)
 const r2DomainShow = ref(false)
 const turnstileShow = ref(false)
-const tgSettingShow = ref(false)
 const noticePopupShow = ref(false)
-const thirdEmailShow = ref(false)
-const webhookShow = ref(false)
-const forwardRulesShow = ref(false)
 const emailPrefixShow = ref(false)
 const showResendList = ref(false)
 const settingStore = useSettingStore();
@@ -1063,42 +866,8 @@ const authRefreshOptions = computed(() => [
   {label: '20s', value: 20},
 ])
 
-const tgChatId = ref([])
-const customDomain = ref('')
-const tgBotStatus = ref(0)
-const tgBotToken = ref('')
-const forwardEmail = ref([])
-const forwardStatus = ref(0)
-const webhookUrl = ref('')
-const webhookStatus = ref(1)
-const webhookRetry = ref(0)
-const webhookSecret = ref('')
-const webhookFormatShow = ref(false)
-const webhookPayloadExample = `{
-  "emailId": 1,
-  "sendEmail": "hello@example.com",
-  "sendName": "hello",
-  "toEmail": "admin@example.com",
-  "toName": "admin",
-  "subject": "Hello",
-  "text": "Hello",
-  "content": "<div>Hello</div>",
-  "code": "123456",
-  "createTime": "2099-12-30 23:59:59"
-}`
 const emailColumnWidth = ref(0)
 const tokenColumnWidth = ref(0)
-const ruleType = ref(0)
-const ruleEmail = ref([])
-const tgMsgFrom = ref('')
-const tgMsgTo = ref('')
-const tgMsgText = ref('')
-
-const tgMsgFromOption = [{label: t('show'), value: 'show'}, {label: t('hide'), value: 'hide'}, {label: t('onlyName'), value:'only-name'}]
-const tgMsgToOption = [{label: t('show'), value: 'show'}, {label: t('hide'), value: 'hide'}]
-const tgMsgTextOption = [{label: t('show'), value: 'show'}, {label: t('hide'), value: 'hide'}]
-const tgMsgLabelWidth = computed(() => locale.value === 'en' ? '120px' : '100px');
-
 getSettings()
 getUpdate()
 
@@ -1216,20 +985,6 @@ function closedSetBackground() {
   backgroundUrl.value = setting.value.background?.startsWith('http') ? setting.value.background : ''
 }
 
-function openTgSetting() {
-  tgBotStatus.value = setting.value.tgBotStatus
-  tgBotToken.value = ''
-  customDomain.value = setting.value.customDomain
-  tgMsgFrom.value = setting.value.tgMsgFrom
-  tgMsgText.value = setting.value.tgMsgText
-  tgMsgTo.value = setting.value.tgMsgTo
-  tgChatId.value = []
-  if (setting.value.tgChatId) {
-    const list = setting.value.tgChatId.split(',')
-    tgChatId.value.push(...list)
-  }
-  tgSettingShow.value = true
-}
 
 function openNoticePopupSetting() {
   noticePopupShow.value = true
@@ -1261,23 +1016,7 @@ function previewNoticePopup() {
   uiStore.previewNotice({...noticeForm})
 }
 
-function openThirdEmailSetting() {
-  forwardEmail.value = []
-  forwardStatus.value = setting.value.forwardStatus
-  if (setting.value.forwardEmail) {
-    const list = setting.value.forwardEmail.split(',')
-    forwardEmail.value.push(...list)
-  }
-  thirdEmailShow.value = true
-}
 
-function openWebhookSetting() {
-  webhookStatus.value = setting.value.webhookStatus
-  webhookUrl.value = setting.value.webhookUrl || ''
-  webhookRetry.value = setting.value.webhookRetry ?? 0
-  webhookSecret.value = setting.value.webhookSecret || ''
-  webhookShow.value = true
-}
 
 function openEmailPrefix() {
   emailPrefixShow.value = true
@@ -1291,58 +1030,9 @@ function openAutoClean() {
   autoCleanShow.value = true
 }
 
-function openForwardRules() {
-  ruleType.value = setting.value.ruleType
-  ruleEmail.value = []
-  if (setting.value.ruleEmail) {
-    const list = setting.value.ruleEmail.split(',')
-    ruleEmail.value.push(...list)
-  }
-  forwardRulesShow.value = true
-}
 
-function emailAddTag(val) {
-  const emails = Array.from(new Set(
-      val.split(/[,，]/).map(item => item.trim()).filter(item => item)
-  ));
 
-  forwardEmail.value.splice(forwardEmail.value.length - 1, 1)
 
-  emails.forEach(email => {
-    if (isEmail(email) && !forwardEmail.value.includes(email)) {
-      forwardEmail.value.push(email)
-    }
-  })
-}
-
-function ruleEmailAddTag(val) {
-  const emails = Array.from(new Set(
-      val.split(/[,，]/).map(item => item.trim()).filter(item => item)
-  ));
-
-  ruleEmail.value.splice(ruleEmail.value.length - 1, 1)
-
-  emails.forEach(email => {
-    if (isEmail(email) && !ruleEmail.value.includes(email)) {
-      ruleEmail.value.push(email)
-    }
-  })
-}
-
-function addChatTag(val) {
-
-  const chatIds = Array.from(new Set(
-      val.split(/[,，]/).map(item => item.trim()).filter(item => item)
-  ));
-
-  tgChatId.value.splice(tgChatId.value.length - 1, 1)
-
-  chatIds.forEach(id => {
-    if (!isNaN(Number(id))) {
-      tgChatId.value.push(id)
-    }
-  })
-}
 
 function clearS3() {
 
@@ -1373,58 +1063,9 @@ function saveS3() {
   editSetting(form)
 }
 
-function tgBotSave() {
-  const form = {
-    customDomain: customDomain.value,
-    tgBotStatus: tgBotStatus.value,
-    tgChatId: tgChatId.value + '',
-    tgMsgFrom: tgMsgFrom.value,
-    tgMsgText: tgMsgText.value,
-    tgMsgTo: tgMsgTo.value
-  }
-  if (tgBotToken.value) form.tgBotToken = tgBotToken.value
-  editSetting(form)
-}
-
-function forwardEmailSave() {
-  const form = {
-    forwardStatus: forwardStatus.value,
-    forwardEmail: forwardEmail.value + ''
-  }
-  editSetting(form)
-}
-
-function webhookSave() {
-  let retry = Number(webhookRetry.value)
-  if (isNaN(retry) || retry < 0) {
-    retry = 0
-  }
-  const url = toOssDomain(webhookUrl.value.trim())
-  if (isIpUrl(url)) {
-    ElMessage({
-      message: t('webhookIpNotSupported'),
-      type: 'warning',
-      plain: true
-    })
-    return
-  }
-  const form = {
-    webhookStatus: webhookStatus.value,
-    webhookUrl: url,
-    webhookRetry: retry,
-    webhookSecret: webhookSecret.value.trim()
-  }
-  editSetting(form)
-}
 
 
-function ruleEmailSave() {
-  const form = {
-    ruleEmail: ruleEmail.value + '',
-    ruleType: ruleType.value
-  }
-  editSetting(form)
-}
+
 
 function doOpacityChange() {
   if (!settingReady.value) return
@@ -1690,7 +1331,7 @@ function change(e) {
   delete settingForm.secretKey
   delete settingForm.s3AccessKey
   delete settingForm.s3SecretKey
-  delete settingForm.tgBotToken
+  for (const key of ['tgBotToken','tgChatId','tgBotStatus','forwardEmail','forwardStatus','webhookUrl','webhookStatus','webhookRetry','webhookSecret','ruleEmail','ruleType','linuxdoClientSecret','githubClientSecret','googleClientSecret']) delete settingForm[key]
   delete settingForm.resendTokens
   editSetting(settingForm, false)
 }
@@ -1733,10 +1374,6 @@ function editSetting(settingForm, refreshStatus = true) {
     r2DomainShow.value = false
     resendTokenFormShow.value = false
     turnstileShow.value = false
-    tgSettingShow.value = false
-    thirdEmailShow.value = false
-    webhookShow.value = false
-    forwardRulesShow.value = false
     addVerifyCountShow.value = false
     regVerifyCountShow.value = false
     noticePopupShow.value = false
@@ -1982,7 +1619,7 @@ function editSetting(settingForm, refreshStatus = true) {
 }
 
 
-:deep(.el-dialog) {
+:deep(.el-dialog:not(.push-management-dialog)) {
   width: 400px !important;
   @media (max-width: 440px) {
     width: calc(100% - 40px) !important;
@@ -2109,7 +1746,7 @@ function editSetting(settingForm, refreshStatus = true) {
     align-items: center;
     justify-content: space-between;
     .el-select {
-      width: v-bind(tgMsgLabelWidth);
+      width: 120px;
     }
     .el-input-number {
       width: 120px;

@@ -2,6 +2,7 @@ import { sqliteTable, text, integer} from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 const user = sqliteTable('user', {
 	userId: integer('user_id').primaryKey({ autoIncrement: true }),
+	sessionVersion: integer('session_version').default(0).notNull(),
 	email: text('email').notNull(),
 	type: integer('type').default(1).notNull(),
 	password: text('password').notNull(),

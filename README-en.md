@@ -146,3 +146,7 @@ This project is licensed under the [MIT](LICENSE) license.
 ## Communication
 
 [Telegram](https://t.me/cloud_mail_tg)
+
+## Independent mailbox login and multi-destination push upgrade
+
+[Upgrade, backups, migration and local verification](doc/upgrade-v3.4.md) (Chinese).

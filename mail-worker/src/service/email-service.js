@@ -60,10 +60,9 @@ const emailService = {
 			size = 50;
 		}
 
-		if (isNaN(allReceive)) {
-			let accountRow = await accountService.selectById(c, accountId);
-			allReceive = accountRow.allReceive;
-		}
+		const ownedAccount = await accountService.selectById(c, accountId);
+		if (!ownedAccount || ownedAccount.userId !== userId) throw new BizError(t('noUserAccount'),403);
+		if (isNaN(allReceive)) allReceive = ownedAccount.allReceive;
 
 		const filters = this.emailListFilters({ userId, accountId, type, allReceive, emailId, timeSort });
 		const countFilters = this.emailListFilters({ userId, accountId, type, allReceive, withCursor: false });
@@ -243,6 +242,7 @@ const emailService = {
 
 	receive(c, params, cidAttList, r2domain) {
 		params.content = this.imgReplace(params.content, cidAttList, r2domain)
+		if (params.accountId) params.userId = sql`(SELECT user_id FROM account WHERE account_id = ${params.accountId})`;
 		return orm(c).insert(email).values({ ...params }).returning().get();
 	},
 
@@ -349,7 +349,7 @@ const emailService = {
 
 			emailRow = await this.selectById(c, emailId);
 
-			if (!emailRow) {
+			if (!emailRow || emailRow.userId !== userId) {
 				throw new BizError(t('notExistEmailReply'));
 			}
 
@@ -410,7 +410,7 @@ const emailService = {
 		emailData.accountId = accountId;
 		emailData.status = useCloudflareEmail ? emailConst.status.DELIVERED : emailConst.status.SENT;
 		emailData.type = emailConst.type.SEND;
-		emailData.userId = userId;
+		emailData.userId = sql`(SELECT user_id FROM account WHERE account_id = ${accountId})`;
 		emailData.resendEmailId = data?.id;
 
 		const recipient = [];
@@ -695,7 +695,7 @@ const emailService = {
 			if (accountRow) {
 
 				//设置给收件人保存
-				emailValues.userId = accountRow.userId;
+				emailValues.userId = sql`(SELECT user_id FROM account WHERE account_id = ${accountRow.accountId})`;
 				emailValues.accountId = accountRow.accountId;
 				emailValues.type = emailConst.type.RECEIVE;
 				emailValues.status = emailConst.status.RECEIVE;
@@ -751,7 +751,7 @@ const emailService = {
 				const attValues = {...attRow};
 				attValues.emailId = emailRow.emailId;
 				attValues.accountId = emailRow.accountId;
-				attValues.userId = emailRow.userId;
+				attValues.userId = sql`(SELECT user_id FROM email WHERE email_id = ${emailRow.emailId})`;
 				attValues.attId = null;
 				await orm(c).insert(att).values(attValues).run();
 			}
@@ -828,10 +828,9 @@ const emailService = {
 		let { emailId, accountId, allReceive } = params;
 		allReceive = Number(allReceive);
 
-		if (isNaN(allReceive)) {
-			let accountRow = await accountService.selectById(c, accountId);
-			allReceive = accountRow.allReceive;
-		}
+		const ownedAccount = await accountService.selectById(c, accountId);
+		if (!ownedAccount || ownedAccount.userId !== userId) throw new BizError(t('noUserAccount'),403);
+		if (isNaN(allReceive)) allReceive = ownedAccount.allReceive;
 
 		const list = await orm(c).select({ ...emailListColumns }).from(email)
 			.innerJoin(

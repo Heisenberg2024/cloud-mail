@@ -121,6 +121,10 @@ app.use('*', async (c, next) => {
 	}
 
 	const { userId, token } = result;
+	const currentUser = await userService.selectById(c, userId);
+	if (!currentUser || currentUser.status !== 0 || (result.sessionVersion ?? 0) !== currentUser.sessionVersion) {
+		throw new BizError(t('authExpired'), 401);
+	}
 	const authInfo = await c.env.kv.get(KvConst.AUTH_INFO + userId, { type: 'json' });
 
 	if (!authInfo) {
@@ -145,7 +149,7 @@ app.use('*', async (c, next) => {
 			return path.startsWith(item);
 		});
 
-		if (userPermIndex === -1 && authInfo.user.email !== c.env.admin) {
+		if (userPermIndex === -1 && currentUser.email !== c.env.admin) {
 			throw new BizError(t('unauthorized'), 403);
 		}
 
@@ -160,7 +164,7 @@ app.use('*', async (c, next) => {
 		await c.env.kv.put(KvConst.AUTH_INFO + userId, JSON.stringify(authInfo), { expirationTtl: constant.TOKEN_EXPIRE });
 	}
 
-	c.set('user',authInfo.user)
+	c.set('user',currentUser)
 
 	return await next();
 });

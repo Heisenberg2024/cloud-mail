@@ -16,8 +16,10 @@ const settingService = {
 	async refresh(c) {
 		const settingRow = await orm(c).select().from(setting).get();
 		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
-		c.set('setting', settingRow);
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
+		c.set('setting', null);
+		c.set('settingRaw', settingRow);
+		await this.query(c);
 	},
 
 	async query(c) {
@@ -26,7 +28,7 @@ const settingService = {
 			return c.get('setting')
 		}
 
-		const setting = await c.env.kv.get(KvConst.SETTING, { type: 'json' });
+		const setting = c.get?.('settingRaw') || await c.env.kv.get(KvConst.SETTING, { type: 'json' });
 
 		if (!setting) {
 			throw new BizError('数据库未初始化 Database not initialized.');
@@ -69,7 +71,7 @@ const settingService = {
 	async get(c, showSiteKey = false) {
 
 		const [settingRow, recordList] = await Promise.all([
-			await this.query(c),
+			structuredClone(await this.query(c)),
 			verifyRecordService.selectListByIP(c)
 		]);
 
@@ -86,7 +88,9 @@ const settingService = {
 
 		settingRow.s3AccessKey = settingRow.s3AccessKey ? `${settingRow.s3AccessKey.slice(0, 12)}******` : null;
 		settingRow.s3SecretKey = settingRow.s3SecretKey ? `${settingRow.s3SecretKey.slice(0, 12)}******` : null;
-		settingRow.tgBotToken = settingRow.tgBotToken ? `${settingRow.tgBotToken.slice(0, 20)}******` : null;
+		settingRow.tgBotToken = settingRow.tgBotToken ? '******' : null;
+		settingRow.webhookSecret = settingRow.webhookSecret ? '******' : null;
+		for (const key of ['linuxdoClientSecret','githubClientSecret','googleClientSecret']) settingRow[key] = settingRow[key] ? '******' : null;
 		settingRow.hasR2 = !!c.env.r2
 		settingRow.hasCfEmail = !!c.env.email
 
@@ -111,6 +115,9 @@ const settingService = {
 	},
 
 	async set(c, params) {
+		const legacyKeys = ['tgBotToken','tgChatId','tgBotStatus','forwardEmail','forwardStatus','webhookUrl','webhookStatus','webhookRetry','webhookSecret','ruleEmail','ruleType'];
+		const hasMigrationTable = await c.env.db.prepare("SELECT name FROM sqlite_master WHERE name='app_migration'").first();
+		if (legacyKeys.some(key => key in params) && hasMigrationTable && await c.env.db.prepare("SELECT version FROM app_migration WHERE version='v3.4'").first()) throw new BizError('Manage forwarding in Mail Push Management / 请在邮件推送管理中编辑',400);
 		const settingData = await this.query(c);
 		let resendTokens = { ...settingData.resendTokens, ...params.resendTokens };
 		Object.keys(resendTokens).forEach(domain => {

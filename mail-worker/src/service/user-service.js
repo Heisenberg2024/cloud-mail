@@ -22,6 +22,13 @@ import settingService from './setting-service';
 import starService from './star-service';
 
 const userService = {
+	async assertManagementTarget(c,userId,allowAdmin=false) {
+		const target=await this.selectByIdIncludeDel(c,userId);
+		if(!target) throw new BizError('User not found / 用户不存在',404);
+		if(target.email.toLowerCase()===String(c.env.admin).toLowerCase() && (!allowAdmin || c.get('user')?.email.toLowerCase()!==String(c.env.admin).toLowerCase())) {
+			throw new BizError(t('unauthorized'),403);
+		}
+	},
 
 	async loginUserInfo(c, userId) {
 
@@ -60,11 +67,12 @@ const userService = {
 
 		const { password } = params;
 
-		if (password.length < 6) {
-			throw new BizError(t('pwdMinLength'));
+		if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+			throw new BizError(t('pwdRange'));
 		}
 		const { salt, hash } = await cryptoUtils.hashPassword(password);
-		await orm(c).update(user).set({ password: hash, salt: salt }).where(eq(user.userId, userId)).run();
+		await orm(c).update(user).set({ password: hash, salt: salt, sessionVersion: sql`${user.sessionVersion} + 1` }).where(eq(user.userId, userId)).run();
+		await c.env.kv.delete(KvConst.AUTH_INFO + userId);
 	},
 
 	selectByEmail(c, email) {
@@ -233,6 +241,8 @@ const userService = {
 			}
 
 			user.sendAction = sendAction;
+			delete user.password;
+			delete user.salt;
 		}
 
 		return { list, total };
@@ -268,6 +278,7 @@ const userService = {
 	async setPwd(c, params) {
 
 		const { password, userId } = params;
+		await this.assertManagementTarget(c,userId,true);
 		await this.resetPassword(c, { password }, userId);
 		await c.env.kv.delete(KvConst.AUTH_INFO + userId);
 	},
@@ -275,10 +286,12 @@ const userService = {
 	async setStatus(c, params) {
 
 		const { status, userId } = params;
+		await this.assertManagementTarget(c,userId);
+		if (![0,1].includes(status)) throw new BizError('Invalid status',400);
 
 		await orm(c)
 			.update(user)
-			.set({ status })
+			.set({ status, sessionVersion: sql`${user.sessionVersion} + 1` })
 			.where(eq(user.userId, userId))
 			.run();
 
@@ -290,6 +303,7 @@ const userService = {
 	async setType(c, params) {
 
 		const { type, userId } = params;
+		await this.assertManagementTarget(c,userId);
 
 		const roleRow = await roleService.selectById(c, type);
 
@@ -299,7 +313,7 @@ const userService = {
 
 		await orm(c)
 			.update(user)
-			.set({ type })
+			.set({ type, sessionVersion: sql`${user.sessionVersion} + 1` })
 			.where(eq(user.userId, userId))
 			.run();
 

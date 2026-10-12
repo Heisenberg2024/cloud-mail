@@ -1,6 +1,8 @@
 <template>
   <div class="user-box">
+    <mailbox-manager v-model="mailboxManagerShow" @changed="refresh"/>
     <div class="header-actions">
+      <el-button v-if="userStore.user.type===0" size="small" @click="mailboxManagerShow=true">{{$t('mailboxManagement')}}</el-button>
       <Icon class="icon" icon="ion:add-outline" width="23" height="23" @click="openAdd"/>
       <div class="search">
         <el-input
@@ -377,6 +379,7 @@
 </template>
 
 <script setup>
+import MailboxManager from '@/components/mailbox-manager/index.vue';
 import {defineOptions, h, reactive, ref, watch} from 'vue'
 import {
   userList,
@@ -407,6 +410,7 @@ defineOptions({
 const {t, locale} = useI18n();
 const roleStore = useRoleStore()
 const userStore = useUserStore()
+const mailboxManagerShow = ref(false)
 const settingStore = useSettingStore()
 const oauthPlatformMap = {
   google: { key: 'google', label: 'Google', icon: 'devicon:google', iconType: 'iconify' },
@@ -1090,9 +1094,11 @@ function adjustWidth() {
 .user-box {
   overflow: hidden;
   height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
-:deep(.el-dialog) {
+:deep(.el-dialog:not(.mailbox-management-dialog)) {
   width: 400px !important;
   @media (max-width: 440px) {
     width: calc(100% - 40px) !important;
@@ -1111,6 +1117,7 @@ function adjustWidth() {
 }
 
 .header-actions {
+  flex-shrink: 0;
   padding: 9px 15px;
   display: flex;
   gap: 15px;
@@ -1157,10 +1164,9 @@ function adjustWidth() {
 .scrollbar {
   width: 100%;
   overflow: auto;
-  height: calc(100% - 50px);
-  @media (max-width: 464px) {
-    height: calc(100% - 90px);
-  }
+  flex: 1;
+  min-height: 0;
+  height: auto;
 }
 
 .details {

@@ -1,6 +1,6 @@
 import orm from '../entity/orm';
 import { att } from '../entity/att';
-import { and, eq, isNull, inArray, desc } from 'drizzle-orm';
+import { and, eq, isNull, inArray, desc, sql } from 'drizzle-orm';
 import r2Service from './r2-service';
 import constant from '../const/constant';
 import fileUtils from '../utils/file-utils';
@@ -31,7 +31,7 @@ const attService = {
 
 		}
 
-		await orm(c).insert(att).values(attachments).run();
+		await orm(c).insert(att).values(attachments.map(item => ({...item, userId: sql`(SELECT user_id FROM email WHERE email_id = ${item.emailId})`}))).run();
 	},
 
 	list(c, params, userId) {
@@ -162,7 +162,7 @@ const attService = {
 			attDataList.push(attData);
 		}
 
-		await orm(c).insert(att).values(attDataList).run();
+		await orm(c).insert(att).values(attDataList.map(item => ({...item, userId: sql`(SELECT user_id FROM email WHERE email_id = ${item.emailId})`}))).run();
 
 		for (let att of attList) {
 			await r2Service.putObj(c, att.key, att.buff, {
@@ -191,7 +191,7 @@ const attService = {
 			delete attData.buff;
 		}
 
-		await orm(c).insert(att).values(attDataList).run();
+		await orm(c).insert(att).values(attDataList.map(item => ({...item, userId: sql`(SELECT user_id FROM email WHERE email_id = ${item.emailId})`}))).run();
 
 	},
 

@@ -1,28 +1,8 @@
-import domainUtils from '../utils/domain-uitls';
+import { assertPublicDns } from './push-validation';
 
 const webhookService = {
-
-	async sendEmail(c, emailRow, webhookUrl, retry = 0, webhookSecret) {
-
-		webhookUrl = domainUtils.toOssDomain(webhookUrl);
-
-		if (!webhookUrl) {
-			return;
-		}
-
-		retry = Number(retry);
-		if (isNaN(retry) || retry < 0) {
-			retry = 0;
-		}
-
-		const headers = {
-			'Content-Type': 'application/json'
-		};
-
-		if (webhookSecret) {
-			headers['Authorization'] = webhookSecret;
-		}
-
+	async sendEmail(c, emailRow, destination) {
+		const { url, secret, retry, timeout } = destination.config;
 		const body = JSON.stringify({
 			emailId: emailRow.emailId,
 			sendEmail: emailRow.sendEmail,
@@ -33,32 +13,36 @@ const webhookService = {
 			text: emailRow.text,
 			content: emailRow.content,
 			code: emailRow.code,
-			createTime: emailRow.createTime
+			createTime: emailRow.createTime,
+			destinationId: destination.id,
+			ruleIds: destination.ruleIds || [],
 		});
-
-		let lastError = '';
-
+		let error = '',
+			attempts = 0;
+		try {
+			await assertPublicDns(url);
+		} catch {
+			return { status: 'failed', attempts, error: 'Webhook public DNS validation failed' };
+		}
 		for (let i = 0; i <= retry; i++) {
+			attempts++;
 			try {
-				const res = await fetch(webhookUrl, {
+				const res = await fetch(url, {
 					method: 'POST',
-					headers,
-					body
+					headers: { 'Content-Type': 'application/json', ...(secret ? { Authorization: secret } : {}) },
+					body,
+					redirect: 'error',
+					signal: AbortSignal.timeout(timeout),
 				});
-
-				if (res.ok) {
-					return;
-				}
-
-				lastError = `status: ${res.status} response: ${await res.text()}`;
-			} catch (e) {
-				lastError = e.message;
+				await res.body?.cancel();
+				if (res.ok) return { status: 'success', attempts, error: '' };
+				error = `Webhook HTTP ${res.status}`;
+				if (res.status < 500 && res.status !== 429) break;
+			} catch {
+				error = 'Webhook network/timeout/redirect failure';
 			}
 		}
-
-		console.error(`Webhook 推送失败: ${lastError}`);
-	}
-
+		return { status: 'failed', attempts, error };
+	},
 };
-
 export default webhookService;

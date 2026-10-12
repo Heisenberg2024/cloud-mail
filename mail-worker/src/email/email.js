@@ -9,26 +9,18 @@ import { emailConst, isDel, settingConst } from '../const/entity-const';
 import emailUtils from '../utils/email-utils';
 import roleService from '../service/role-service';
 import userService from '../service/user-service';
-import telegramService from '../service/telegram-service';
 import aiService from '../service/ai-service';
-import webhookService from '../service/webhook-service';
+import pushRouterService from '../service/push-router-service';
+import { normalizeEmail } from '../service/push-validation';
+import { ensureV34Schema } from '../init/upgrade-v34';
 
 export async function email(message, env, ctx) {
 
 	try {
+		await ensureV34Schema({env});
 
 		const {
 			receive,
-			tgChatId,
-			tgBotStatus,
-			forwardStatus,
-			forwardEmail,
-			webhookStatus,
-			webhookUrl,
-			webhookRetry,
-			webhookSecret,
-			ruleEmail,
-			ruleType,
 			r2Domain,
 			noRecipient,
 			blackSubject,
@@ -62,11 +54,13 @@ export async function email(message, env, ctx) {
 			return;
 		}
 
-		let account = await accountService.selectByEmailIncludeDel({ env: env }, message.to);
+		const envelopeRecipient = normalizeEmail(message.to);
+		if (!envelopeRecipient) { message.setReject('Invalid recipient'); return; }
+		let account = await accountService.selectByEmailIncludeDel({ env: env }, envelopeRecipient);
 
 		if (!account) {
-			const baseEmail = emailUtils.getBaseEmail(message.to);
-			if (baseEmail && baseEmail !== message.to) {
+			const baseEmail = emailUtils.getBaseEmail(envelopeRecipient);
+			if (baseEmail && baseEmail !== envelopeRecipient) {
 				account = await accountService.selectByEmailIncludeDel({ env: env }, baseEmail);
 			}
 		}
@@ -76,17 +70,21 @@ export async function email(message, env, ctx) {
 			return;
 		}
 
+		if (account?.isDel) { message.setReject('Recipient deleted'); return; }
+
 		let userRow = {}
 
 		if (account) {
 			 userRow = await userService.selectByIdIncludeDel({ env: env }, account.userId);
 		}
 
+		if (account && (!userRow || userRow.isDel)) { message.setReject('Recipient deleted'); return; }
+
 		if (account && userRow.email !== env.admin) {
 
 			let { banEmail, availDomain } = await roleService.selectByUserId({ env: env }, account.userId);
 
-			if (!roleService.hasAvailDomainPerm(availDomain, message.to)) {
+			if (!roleService.hasAvailDomainPerm(availDomain, envelopeRecipient)) {
 				message.setReject('The recipient is not authorized to use this domain.');
 				return;
 			}
@@ -107,7 +105,7 @@ export async function email(message, env, ctx) {
 		const code = await aiService.extractCode({ env }, email, { aiCode, aiCodeFilter });
 
 		const params = {
-			toEmail: message.to,
+			toEmail: envelopeRecipient,
 			toName: toName,
 			sendEmail: email.from.address,
 			name: email.from.name || emailUtils.getName(email.from.address),
@@ -159,42 +157,8 @@ export async function email(message, env, ctx) {
 		emailRow = await emailService.completeReceive({ env }, account ? emailConst.status.RECEIVE : emailConst.status.NOONE, emailRow.emailId);
 
 
-		if (ruleType === settingConst.ruleType.RULE) {
-
-			const emails = ruleEmail.split(',');
-
-			if (!emails.includes(message.to)) {
-				return;
-			}
-
-		}
-
-		//转发到TG
-		if (tgBotStatus === settingConst.tgBotStatus.OPEN && tgChatId) {
-			await telegramService.sendEmailToBot({ env }, emailRow)
-		}
-
-		//转发到其他邮箱
-		if (forwardStatus === settingConst.forwardStatus.OPEN && forwardEmail) {
-
-			const emails = forwardEmail.split(',');
-
-			await Promise.all(emails.map(async email => {
-
-				try {
-					await message.forward(email);
-				} catch (e) {
-					console.error(`转发邮箱 ${email} 失败：`, e);
-				}
-
-			}));
-
-		}
-
-		//转发到 Webhook
-		if (webhookStatus === settingConst.webhookStatus.OPEN && webhookUrl) {
-			await webhookService.sendEmail({ env }, emailRow, webhookUrl, webhookRetry, webhookSecret);
-		}
+		// Await inside the email event: forwarding needs the original message lifecycle.
+		await pushRouterService.route({ env },emailRow,message);
 
 	} catch (e) {
 		console.error('邮件接收异常: ', e);

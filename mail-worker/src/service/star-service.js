@@ -29,7 +29,7 @@ const starService = {
 			return
 		}
 
-		await orm(c).insert(star).values({ userId, emailId }).run();
+		await c.env.db.prepare('INSERT INTO star(user_id,email_id) SELECT user_id,email_id FROM email WHERE email_id=? AND user_id=? AND is_del=0').bind(emailId,userId).run();
 	},
 
 	async cancel(c, params, userId) {
@@ -57,6 +57,7 @@ const starService = {
 			.where(
 				and(
 					eq(star.userId, userId),
+					eq(email.userId, userId),
 					eq(email.isDel, isDel.NORMAL),
 					emailId ? lt(star.emailId, emailId) : undefined))
 			.orderBy(desc(star.emailId))
