@@ -2,31 +2,11 @@ import { requireAdmin } from '../security/admin';
 import BizError from '../error/biz-error';
 import cryptoUtils from '../utils/crypto-utils';
 import roleService from './role-service';
+import accountService from './account-service';
 
 const mailboxLoginService = {
 	async list(c, params = {}) {
-		requireAdmin(c);
-		const q = String(params.search || '')
-			.trim()
-			.slice(0, 254);
-		const limit = Math.min(100, Math.max(1, Number(params.size) || 30));
-		const offset = Math.max(0, (Number(params.page) || 1) - 1) * limit;
-		const where = `a.is_del=0 AND u.is_del=0 AND (a.email LIKE ? OR u.email LIKE ?)`;
-		const query = `%${q}%`;
-		const [list, count] = await c.env.db.batch([
-			c.env.db
-				.prepare(
-					`SELECT a.account_id AS accountId,a.email,a.user_id AS userId,u.email AS ownerEmail,
-			 u.type AS roleId,r.name AS roleName,u.status AS userStatus,
-			 CASE WHEN u.email=? COLLATE NOCASE THEN 1 ELSE 0 END AS isAdmin,
-			 CASE WHEN a.email=u.email COLLATE NOCASE THEN 1 ELSE 0 END AS independent
-			 FROM account a JOIN user u ON u.user_id=a.user_id LEFT JOIN role r ON r.role_id=u.type
-			 WHERE ${where} ORDER BY a.account_id DESC LIMIT ? OFFSET ?`,
-				)
-				.bind(c.env.admin, query, query, limit, offset),
-			c.env.db.prepare(`SELECT count(*) AS total FROM account a JOIN user u ON u.user_id=a.user_id WHERE ${where}`).bind(query, query),
-		]);
-		return { list: list.results, total: count.results[0].total };
+		return accountService.adminList(c, params);
 	},
 	async enable(c, params) {
 		requireAdmin(c);

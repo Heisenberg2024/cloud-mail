@@ -298,6 +298,116 @@ describe('Mailbox independent login and D1 ownership', () => {
 	});
 });
 
+describe('Administrator mailbox view and ownership boundaries', () => {
+	async function api(token, path, method = 'GET', body) {
+		return (await worker.fetch(new Request('https://mail.example.com/api/' + path, {
+			method, headers: { Authorization: token, 'Content-Type': 'application/json' },
+			...(body ? {body: JSON.stringify(body)} : {}),
+		}), env, {})).json();
+	}
+	it('keeps own mailboxes separate while all mailboxes follows an upgraded owner', async () => {
+		const owner = await upgrade();
+		const own = await accountService.list(c, {size: 30}, 1);
+		expect(own.map(row => row.accountId)).toEqual([1, b.accountId, d.accountId]);
+		const all = await accountService.adminList(c);
+		expect(all.total).toBe(4);
+		expect(all.list.find(row => row.accountId === a.accountId)).toMatchObject({email: a.email, userId: owner.userId, ownerEmail: a.email, independent: 1, userStatus: 0, accountStatus: 0});
+		expect(all.list.find(row => row.accountId === b.accountId)).toMatchObject({ownerEmail: env.admin, independent: 0});
+		expect(all.list.find(row => row.accountId === 1).isAdmin).toBe(1);
+		expect(await mailboxLoginService.list(c)).toEqual(all);
+	});
+	it('searches owners and mailbox addresses with stable pages and excludes deleted owners/mailboxes', async () => {
+		const owner = await upgrade();
+		await sql('UPDATE user SET status=1 WHERE user_id=?', owner.userId);
+		expect((await accountService.adminList(c, {search: 'A@EXAMPLE.COM'})).list[0].userStatus).toBe(1);
+		expect((await accountService.adminList(c, {search: env.admin})).total).toBe(3);
+		const pages = await Promise.all([1, 2, 3, 4].map(page => accountService.adminList(c, {page, size: 1})));
+		expect(pages.map(page => page.list[0].accountId)).toEqual([d.accountId, b.accountId, a.accountId, 1]);
+		await sql('UPDATE account SET is_del=1 WHERE account_id=?', b.accountId);
+		await sql('UPDATE user SET is_del=1 WHERE user_id=?', owner.userId);
+		expect((await accountService.adminList(c)).total).toBe(2);
+		await expect(emailService.allList(c, {accountId: a.accountId})).rejects.toMatchObject({code: 404});
+	});
+	it('uses exact account IDs for lists, counts, both cursor directions and refresh despite misleading addresses', async () => {
+		const owner = await upgrade();
+		await sql("UPDATE email SET to_email='a@example.com',send_email='a@example.com',text='historical body',content='<p>historical body</p>'");
+		await sql("INSERT INTO email(email_id,account_id,user_id,type,status,subject,to_email) VALUES (20,?,?,0,0,'Received newer','a+tag@example.com'),(21,?,1,0,0,'Received other','a@example.com'),(22,?,?,0,0,'Deleted','a@example.com'),(23,?,?,0,6,'Saving','a@example.com')",
+			a.accountId, owner.userId, b.accountId, a.accountId, owner.userId, a.accountId, owner.userId);
+		await sql('UPDATE email SET is_del=1 WHERE email_id=22');
+		const query = {accountId: a.accountId, type: 'receive', size: 1, full: 0, subject: 'Received'};
+		const page = await emailService.allList(c, query);
+		expect(page.list.map(row => row.emailId)).toEqual([20]);
+		expect(page.total).toBe(2);
+		expect(page.latestEmail).toMatchObject({emailId: 20, accountId: a.accountId, userId: owner.userId});
+		expect((await emailService.allList(c, {...query, emailId: 20})).list.map(row => row.emailId)).toEqual([10]);
+		expect((await emailService.allList(c, {...query, timeSort: 1, emailId: 10})).list.map(row => row.emailId)).toEqual([20]);
+		expect((await emailService.allEmailLatest(c, {...query, emailId: 10})).map(row => row.emailId)).toEqual([20]);
+		expect((await emailService.allEmailLatest(c, {...query, subject: 'No match', emailId: 0}))).toEqual([]);
+		expect((await emailService.allList(c, {...query, subject: 'No match'})).latestEmail.emailId).toBe(0);
+		const sent = await emailService.allList(c, {accountId: a.accountId, type: 'send', full: 1});
+		expect(sent.total).toBe(1);
+		expect(sent.list[0]).toMatchObject({emailId: 11, userId: owner.userId, text: 'historical body'});
+		expect(sent.list[0].attList.map(att => att.key)).toEqual(['attachments/original-send']);
+	});
+	it('loads received and sent detail and attachments without modifying any owned data or forwarding associations', async () => {
+		const target = await addTarget('Mailbox target');
+		await addRule('Mailbox rule', [a.accountId], [target]);
+		await upgrade();
+		await sql("UPDATE email SET text='Historical body',content='<p>Historical body</p>' WHERE account_id=?", a.accountId);
+		const snapshot = async () => Promise.all(['account', 'user', 'email', 'attachments', 'star', 'push_rule_account', 'mailbox_login_upgrade'].map(table => sql(`SELECT * FROM ${table}`)));
+		const before = await snapshot();
+		for (const emailId of [10, 11]) {
+			const detail = await emailService.adminDetail(c, {accountId: a.accountId, emailId});
+			expect(detail.text).toBe('Historical body');
+			expect(detail.attList).toHaveLength(1);
+			expect(detail.attList[0].emailId).toBe(emailId);
+		}
+		await emailService.allList(c, {accountId: a.accountId, type: 'all', full: 1});
+		await emailService.allEmailLatest(c, {accountId: a.accountId, emailId: 0});
+		await accountService.adminList(c, {accountId: a.accountId});
+		expect(await snapshot()).toEqual(before);
+		await expect(emailService.adminDetail(c, {accountId: b.accountId, emailId: 10})).rejects.toMatchObject({code: 404});
+		await expect(emailService.adminDetail(c, {accountId: a.accountId, emailId: 12})).rejects.toMatchObject({code: 404});
+	});
+	it.each(['', '0', '-1', 'abc', '1.5', '9007199254740992'])('rejects invalid accountId=%s instead of falling back to all mail', async accountId => {
+		await expect(emailService.allList(c, {accountId})).rejects.toMatchObject({code: 400});
+		await expect(emailService.allEmailLatest(c, {accountId})).rejects.toMatchObject({code: 400});
+		await expect(emailService.adminDetail(c, {accountId, emailId: 10})).rejects.toMatchObject({code: 400});
+	});
+	it('returns 403 for every admin mail API even when an ordinary role has legacy all-mail permissions', async () => {
+		await upgrade();
+		await sql("INSERT INTO role_perm(role_id,perm_id) SELECT 1,perm_id FROM perm WHERE perm_key IN ('all-email:query','all-email:delete') AND perm_id NOT IN (SELECT perm_id FROM role_perm WHERE role_id=1)");
+		const token = await loginService.login(context(), {email: a.email, password});
+		for (const [path, method] of [
+			['account/all?accountId=1&userId=1', 'GET'], ['mailbox-login/accounts', 'GET'],
+			['allEmail/list?accountId=1', 'GET'], ['allEmail/list', 'GET'],
+			['allEmail/latest?emailId=0&accountId=1', 'GET'], ['allEmail/detail?emailId=12&accountId=1', 'GET'],
+			['allEmail/delete?emailIds=12', 'DELETE'], ['allEmail/batchDelete?subject=Other&type=eq', 'DELETE'],
+		]) expect((await api(token, path, method)).code).toBe(403);
+		expect(await first('SELECT email_id FROM email WHERE email_id=12')).toBeTruthy();
+	});
+	it('keeps ordinary APIs scoped to the login user and prevents administrator impersonation when sending', async () => {
+		const owner = await upgrade();
+		const adminToken = await loginService.login(context(), {email: env.admin, password});
+		const userToken = await loginService.login(context(), {email: a.email, password});
+		expect((await api(adminToken, 'account/all')).data.total).toBe(4);
+		expect((await api(adminToken, `allEmail/list?accountId=${a.accountId}&type=receive`)).data.list.map(e => e.emailId)).toEqual([10]);
+		expect((await api(adminToken, `allEmail/detail?accountId=${a.accountId}&emailId=10`)).data.attList).toHaveLength(1);
+		expect((await api(userToken, 'account/list?size=30&userId=1&view=all')).data.map(row => row.accountId)).toEqual([a.accountId]);
+		for (const token of [adminToken, userToken]) {
+			const otherId = token === adminToken ? a.accountId : b.accountId;
+			expect((await api(token, `email/list?accountId=${otherId}&size=30&allReceive=1&userId=${owner.userId}`)).code).toBe(403);
+			expect((await api(token, `email/latest?accountId=${otherId}&emailId=0&allReceive=1`)).code).toBe(403);
+			expect((await api(token, 'email/send', 'POST', {accountId: otherId})).code).toBe(403);
+		}
+		const before = await first('SELECT unread,user_id FROM email WHERE email_id=10');
+		await api(adminToken, 'email/read', 'PUT', {emailIds: [10]});
+		expect(await first('SELECT unread,user_id FROM email WHERE email_id=10')).toEqual(before);
+		expect((await api(adminToken, 'email/attList?emailId=10')).data).toEqual([]);
+		expect((await api(userToken, `email/list?accountId=${a.accountId}&size=30&allReceive=1`)).data.list.map(e => e.emailId)).toEqual([10]);
+	});
+});
+
 describe('Destination/rule matching and delivery', () => {
 	it('supports A → Bot 1; B,C → Bot 2 with separate tokens and no cross delivery', async () => {
 		const one = await addTarget('Bot 1'),

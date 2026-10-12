@@ -12,8 +12,40 @@ import turnstileService from './turnstile-service';
 import roleService from './role-service';
 import { t } from '../i18n/i18n';
 import verifyRecordService from './verify-record-service';
+import { requireAdmin } from '../security/admin';
 
 const accountService = {
+
+	// This view never changes mailbox ownership, including after an independent-login upgrade.
+	async adminList(c, params = {}) {
+		requireAdmin(c);
+		const search = String(params.search || '').trim().slice(0, 254);
+		const requestedSize = Number(params.size), requestedPage = Number(params.page);
+		const size = Number.isFinite(requestedSize) ? Math.min(100, Math.max(1, Math.trunc(requestedSize))) : 30;
+		const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? Math.min(requestedPage, 1000000) : 1;
+		const conditions = ['a.is_del=0', 'u.is_del=0', '(a.email LIKE ? OR u.email LIKE ?)'];
+		const bindings = [`%${search}%`, `%${search}%`];
+		for (const [key, column] of [['accountId', 'a.account_id'], ['userId', 'a.user_id']]) {
+			if (params[key] === undefined) continue;
+			const id = Number(params[key]);
+			if (!Number.isSafeInteger(id) || id < 1) throw new BizError('Invalid mailbox or user ID', 400);
+			conditions.push(`${column}=?`);
+			bindings.push(id);
+		}
+		const where = conditions.join(' AND ');
+		const [list, count] = await c.env.db.batch([
+			c.env.db.prepare(`SELECT a.account_id AS accountId,a.email,a.user_id AS userId,
+			 a.status AS accountStatus,u.email AS ownerEmail,u.type AS roleId,r.name AS roleName,u.status AS userStatus,
+			 CASE WHEN u.email=? COLLATE NOCASE THEN 1 ELSE 0 END AS isAdmin,
+			 CASE WHEN a.email=u.email COLLATE NOCASE THEN 1 ELSE 0 END AS independent
+			 FROM account a JOIN user u ON u.user_id=a.user_id LEFT JOIN role r ON r.role_id=u.type
+			 WHERE ${where} ORDER BY a.account_id DESC LIMIT ? OFFSET ?`)
+				.bind(c.env.admin, ...bindings, size, (page - 1) * size),
+			c.env.db.prepare(`SELECT count(*) AS total FROM account a JOIN user u ON u.user_id=a.user_id WHERE ${where}`)
+				.bind(...bindings),
+		]);
+		return { list: list.results, total: count.results[0].total };
+	},
 
 	async add(c, params, userId) {
 

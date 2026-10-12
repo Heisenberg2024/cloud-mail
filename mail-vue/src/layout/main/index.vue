@@ -16,6 +16,7 @@ import {useSettingStore} from "@/store/setting.js";
 import {computed, onBeforeUnmount, onMounted, watch} from "vue";
 import { useRoute } from 'vue-router'
 import { hasPerm } from "@/perm/perm.js"
+import { useUserStore } from '@/store/user';
 
 const settingStore = useSettingStore()
 const uiStore = useUiStore();
@@ -25,7 +26,7 @@ let  innerWidth =  window.innerWidth
 let elNotification = null
 
 const accountShow = computed(() => {
-  return uiStore.accountShow && settingStore.settings.manyEmail === 0
+  return uiStore.accountShow && (settingStore.settings.manyEmail === 0 || useUserStore().user.type === 0)
 })
 
 watch(() => uiStore.changeNotice, () => {
@@ -91,7 +92,7 @@ onBeforeUnmount(() => {
 })
 
 const handleResize = () => {
-  if (['content','email','send'].includes(route.meta.name)) {
+  if (['content','email','send','all-email'].includes(route.meta.name)) {
     if (innerWidth !==  window.innerWidth) {
       innerWidth = window.innerWidth;
       uiStore.accountShow = window.innerWidth >= 767;
@@ -140,6 +141,13 @@ const handleResize = () => {
   @media (max-width: 1024px) {
     width: 260px;
     z-index: 100;
+  }
+}
+
+@media (max-width: 767px) {
+  .show.admin-account-box, .hide.admin-account-box {
+    top: 60px;
+    height: calc(100% - 60px);
   }
 }
 

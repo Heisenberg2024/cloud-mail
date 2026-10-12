@@ -39,8 +39,13 @@
 					></template
 				></el-table-column
 			>
+			<el-table-column :label="t('tabStatus')" min-width="110">
+				<template #default="{ row }"><el-tag :type="row.userStatus ? 'danger' : 'success'">{{ t(row.userStatus ? 'disabled' : 'enabled') }}</el-tag>
+				<span v-if="row.accountStatus"> / {{ t('mailboxStatus') }}: {{ row.accountStatus }}</span></template>
+			</el-table-column>
 			<el-table-column :label="t('action')" min-width="240"
 				><template #default="{ row }">
+					<el-button size="small" @click="viewMail(row)">{{ t('mailboxViewMail') }}</el-button>
 					<el-button
 						v-if="!row.independent"
 						size="small"
@@ -177,7 +182,9 @@ import { useAccountStore } from '@/store/account';
 import { mailboxes, enableLogin } from '@/request/push';
 import { roleSelectUse } from '@/request/role';
 import { userSetPwd, userSetStatus, userSetType } from '@/request/user';
-const props = defineProps({ modelValue: Boolean });
+import { useRouter } from 'vue-router';
+const router = useRouter();
+const props = defineProps({ modelValue: Boolean, userId: Number });
 const emit = defineEmits(['update:modelValue', 'changed']);
 const show = computed({
 		get: () => props.modelValue,
@@ -209,6 +216,7 @@ async function load() {
 			search: search.value,
 			page: page.value,
 			size: 30,
+			...(props.userId ? { userId: props.userId } : {}),
 		});
 		if (current !== sequence) return;
 		list.value = result.list;
@@ -237,6 +245,7 @@ async function run(action) {
 	busy.value = true;
 	try {
 		await action();
+		accountStore.ownershipVersion++;
 		await load();
 		emit('changed');
 	} finally {
@@ -258,7 +267,6 @@ async function upgrade() {
 			accountStore.currentAccount = userStore.user.account;
 			accountStore.currentAccountId = userStore.user.account.accountId;
 		}
-		accountStore.ownershipVersion++;
 	});
 	upgradeShow.value = false;
 }
@@ -266,6 +274,12 @@ function openReset(row) {
 	selectedUser.value = row.userId;
 	resetPassword.value = '';
 	resetShow.value = true;
+}
+function viewMail(row) {
+	accountStore.mailboxView = 'all';
+	accountStore.managedAccount = row;
+	show.value = false;
+	router.push({name: 'all-email', query: {accountId: row.accountId}});
 }
 async function reset() {
 	await run(() =>
@@ -296,6 +310,7 @@ async function status(row) {
 }
 watch(show, async (visible) => {
 	if (visible) {
+		if (props.userId) search.value = '';
 		roles.value = await roleSelectUse();
 		reload();
 	} else {

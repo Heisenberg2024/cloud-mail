@@ -1,7 +1,7 @@
 <template>
   <div class="email-container">
     <div class="header-actions">
-      <el-checkbox
+      <el-checkbox v-if="!readOnly"
           v-model="checkAll"
           :indeterminate="isIndeterminate"
           :disabled="!emailList.length || loading"
@@ -13,10 +13,10 @@
         <slot name="first"></slot>
         <Icon class="icon reload" icon="ion:reload" width="18" height="18" @click="refresh"/>
         <Icon v-perm="'email:delete'" class="icon delete" icon="uiw:delete" width="16" height="16"
-              v-if="getSelectedMailsIds().length > 0"
+              v-if="!readOnly && getSelectedMailsIds().length > 0"
               @click="handleDelete"/>
         <Icon v-perm="'email:delete'" class="icon delete" icon="fluent:mail-read-20-regular" width="21" height="21"
-              v-if="getSelectedMailsIds().length > 0 && showUnread"
+              v-if="!readOnly && getSelectedMailsIds().length > 0 && showUnread"
               @click="handleRead"/>
       </div>
 
@@ -45,7 +45,7 @@
                  :key="item.emailId"
                  @contextmenu="handleContextmenu($event, item)"
             >
-              <el-checkbox :class=" props.type === 'all-email' ? 'all-email-checkbox' : 'checkbox'"
+              <el-checkbox v-if="!readOnly" :class=" props.type === 'all-email' ? 'all-email-checkbox' : 'checkbox'"
                            v-model="item.checked"
                            :disabled="!item.checked && isSelectMax"
                            @click.stop></el-checkbox>
@@ -220,7 +220,7 @@
               </div>
             </template>
           </el-dropdown-item>
-          <el-dropdown-item @click="rightDelete(rightClickEmail.emailId)">
+          <el-dropdown-item v-if="!readOnly" @click="rightDelete(rightClickEmail.emailId)">
             <template #default>
               <div class="right-dropdown-item">
                 <Icon icon="uiw:delete" width="16" height="20" style="margin-left: 1px;margin-right: 3px" />
@@ -249,6 +249,7 @@ import { UseVirtualList } from '@vueuse/components'
 import { useScroll } from '@vueuse/core'
 
 const props = defineProps({
+  readOnly: { type: Boolean, default: false },
   getEmailList: Function,
   emailDelete: Function,
   emailRead: Function,
@@ -317,6 +318,7 @@ let scrollTop = 0
 const latestEmail = ref(null)
 const scrollbarRef = ref(null)
 let reqLock = false
+let requestSequence = 0
 let isMobile = ref(innerWidth < 1367)
 let skeletonRows = 0
 const timePaddingRight = ref('');
@@ -374,6 +376,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  requestSequence++;
   clearInterval(timer)
 })
 
@@ -559,6 +562,7 @@ const accountShow = computed(() => {
 })
 
 function starChange(email) {
+  if (props.readOnly) return;
 
   if (!email.isStar) {
 
@@ -590,12 +594,14 @@ function changeAccountShow() {
 }
 
 const handleRead = () => {
+  if (props.readOnly) return;
   const emailIds = getSelectedMailsIds();
   props.emailRead(emailIds);
   localRead(emailIds);
 }
 
 function emailRead(emailId) {
+  if (props.readOnly) return;
   props.emailRead([emailId])
   localRead([emailId]);
 }
@@ -611,6 +617,7 @@ function localRead(emailIds) {
 }
 
 function rightDelete(emailId) {
+  if (props.readOnly) return;
 
   if (props.type === 'all-email') {
     ElMessageBox.confirm(t('delOneEmailConfirm'), {
@@ -662,6 +669,7 @@ async function copyCode(code) {
 }
 
 function handleDelete() {
+  if (props.readOnly) return;
   ElMessageBox.confirm(t('delEmailsConfirm'), {
     confirmButtonText: t('confirm'),
     cancelButtonText: t('cancel'),
@@ -802,6 +810,7 @@ function getEmailList(refresh = false) {
   let emailId = emailList.length > 0 ? emailList.at(-1).emailId : 0;
 
   reqLock = true
+  const sequence = ++requestSequence;
 
   if (!refresh) {
 
@@ -830,6 +839,7 @@ function getEmailList(refresh = false) {
     if (duration < 300 && !emailId) {
         await sleep(300 - duration)
     }
+    if (sequence !== requestSequence) return;
     firstLoad.value = false
 
     let list = data.list.map(item => ({
@@ -852,7 +862,10 @@ function getEmailList(refresh = false) {
     followLoading.value = data.list.length >= queryParam.size;
 
     total.value = data.total;
+  }).catch(e => {
+    if (sequence === requestSequence) console.error(e);
   }).finally(() => {
+    if (sequence !== requestSequence) return;
     loading.value = false
     reqLock = false
   })
@@ -889,6 +902,14 @@ function refresh() {
 }
 
 function refreshList() {
+  // Invalidate in-flight pages so a switch/search can start immediately.
+  requestSequence++;
+  reqLock = false;
+  emailList.length = 0;
+  latestEmail.value = null;
+  total.value = 0;
+  noLoading.value = false;
+  followLoading.value = false;
   checkAll.value = false;
   isIndeterminate.value = false;
   getEmailList(true);
@@ -987,6 +1008,7 @@ function loadData() {
     user-select: none;
   }
   &.all-email {
+    padding-left: 12px;
     height: 65px;
     @media (max-width: 1366px) {
       height: 132px;

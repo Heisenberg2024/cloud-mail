@@ -1,6 +1,15 @@
 import app from '../hono/hono';
 import emailService from '../service/email-service';
 import result from '../model/result';
+import { requireAdmin } from '../security/admin';
+
+app.use('/allEmail/*', async (c, next) => {
+	// Role permissions alone must never grant access to other users' mail.
+	requireAdmin(c);
+	return next();
+});
+
+app.get('/allEmail/detail', async (c) => c.json(result.ok(await emailService.adminDetail(c, c.req.query()))));
 
 app.get('/allEmail/list', async (c) => {
 	const data = await emailService.allList(c, c.req.query());

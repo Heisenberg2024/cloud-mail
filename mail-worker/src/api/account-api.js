@@ -3,6 +3,8 @@ import accountService from '../service/account-service';
 import result from '../model/result';
 import userContext from '../security/user-context';
 
+app.get('/account/all', async (c) => c.json(result.ok(await accountService.adminList(c, c.req.query()))));
+
 app.get('/account/list', async (c) => {
 	const list = await accountService.list(c, c.req.query(), userContext.getUserId(c));
 	return c.json(result.ok(list));

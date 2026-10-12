@@ -23,6 +23,7 @@ import domainUtils from '../utils/domain-uitls';
 import account from "../entity/account";
 import { att } from '../entity/att';
 import telegramService from './telegram-service';
+import { requireAdmin } from '../security/admin';
 
 const emailService = {
 
@@ -170,8 +171,11 @@ const emailService = {
 		return conditions;
 	},
 
-	allEmailListFilters({ emailId, name, subject, accountEmail, userEmail, type, timeSort, withCursor = true }) {
+	allEmailListFilters({ emailId, accountId, name, subject, accountEmail, userEmail, type, timeSort, withCursor = true }) {
 		const conditions = [];
+		if (accountId !== undefined) {
+			conditions.push(eq(email.accountId, accountId), eq(email.isDel, isDel.NORMAL), ne(email.status, emailConst.status.SAVING));
+		}
 
 		if (type === 'send') {
 			conditions.push(eq(email.type, emailConst.type.SEND));
@@ -248,6 +252,8 @@ const emailService = {
 
 	//邮件发送
 	async send(c, params, userId) {
+		const accountRow = await accountService.selectById(c, params.accountId);
+		if (!accountRow || accountRow.userId !== userId) throw new BizError(t('sendEmailNotCurUser'), 403);
 
 		let {
 			accountId, //发送账号id
@@ -306,16 +312,6 @@ const emailService = {
 				if (roleRow.sendType === 'count') throw new BizError(t('totalSendLack'), 403);
 			}
 
-		}
-
-		const accountRow = await accountService.selectById(c, accountId);
-
-		if (!accountRow) {
-			throw new BizError(t('senderAccountNotExist'));
-		}
-
-		if (accountRow.userId !== userId) {
-			throw new BizError(t('sendEmailNotCurUser'));
 		}
 
 		if (c.env.admin !== userRow.email) {
@@ -895,6 +891,8 @@ const emailService = {
 	},
 
 	async allList(c, params) {
+		requireAdmin(c);
+		const accountId = await this.adminAccountId(c, params);
 
 		let { emailId, size, name, subject, accountEmail, userEmail, type, timeSort, full } = params;
 
@@ -921,8 +919,8 @@ const emailService = {
 
 		full = full === 1;
 
-		const filters = this.allEmailListFilters({ emailId, name, subject, accountEmail, userEmail, type, timeSort });
-		const countFilters = this.allEmailListFilters({ emailId, name, subject, accountEmail, userEmail, type, timeSort, withCursor: false });
+		const filters = this.allEmailListFilters({ emailId, accountId, name, subject, accountEmail, userEmail, type, timeSort });
+		const countFilters = this.allEmailListFilters({ emailId, accountId, name, subject, accountEmail, userEmail, type, timeSort, withCursor: false });
 		const columns = full ? emailListColumns : emailBriefColumns;
 
 		const query = orm(c).select({ ...columns, userEmail: user.email })
@@ -953,7 +951,8 @@ const emailService = {
 			accountId: email.accountId,
 			userId: email.userId,
 		}).from(email)
-			.where(eq(email.type, emailConst.type.RECEIVE))
+			.leftJoin(user, eq(email.userId, user.userId))
+			.where(and(...countFilters))
 			.orderBy(desc(email.emailId)).limit(1).get();
 
 		let [list, totalRow, latestEmail] = await Promise.all([listQuery, totalQuery, latestEmailQuery]);
@@ -967,7 +966,7 @@ const emailService = {
 		if (!latestEmail) {
 			latestEmail = {
 				emailId: 0,
-				accountId: 0,
+				accountId: accountId || 0,
 				userId: 0,
 			}
 		}
@@ -976,16 +975,13 @@ const emailService = {
 	},
 
 	async allEmailLatest(c, params) {
-
-		const { emailId } = params;
+		requireAdmin(c);
+		const accountId = await this.adminAccountId(c, params);
+		const filters = this.allEmailListFilters({ ...params, accountId, emailId: Number(params.emailId) || 0, type: params.type || 'receive', timeSort: 1 });
 
 		let list = await orm(c).select({ ...emailListColumns, userEmail: user.email }).from(email)
 			.leftJoin(user, eq(email.userId, user.userId))
-			.where(
-				and(
-					gt(email.emailId, emailId),
-					eq(email.type, emailConst.type.RECEIVE)
-				))
+			.where(and(...filters))
 			.orderBy(desc(email.emailId))
 			.limit(20);
 
@@ -994,6 +990,28 @@ const emailService = {
 			item.listText = this.toListText(item);
 		}
 		return list;
+	},
+
+	async adminAccountId(c, params) {
+		requireAdmin(c);
+		if (params.accountId === undefined) return undefined;
+		const id = Number(params.accountId);
+		if (!Number.isSafeInteger(id) || id < 1) throw new BizError('Invalid mailbox ID', 400);
+		const { list } = await accountService.adminList(c, { accountId: id, size: 1 });
+		if (!list.length) throw new BizError('Mailbox not available / 邮箱不存在或已删除', 404);
+		return id;
+	},
+
+	async adminDetail(c, params) {
+		const accountId = await this.adminAccountId(c, params);
+		const emailId = Number(params.emailId);
+		if (!Number.isSafeInteger(emailId) || emailId < 1) throw new BizError('Invalid mail ID', 400);
+		const row = await orm(c).select({ ...emailListColumns, userEmail: user.email }).from(email)
+			.leftJoin(user, eq(email.userId, user.userId))
+			.where(and(eq(email.emailId, emailId), ...this.allEmailListFilters({ accountId }))).get();
+		if (!row) throw new BizError('Mail not available / 邮件不存在', 404);
+		await this.emailAddAtt(c, [row]);
+		return row;
 	},
 
 	async emailAddAtt(c, list) {

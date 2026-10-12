@@ -168,6 +168,7 @@ import {loginUserInfo} from "@/request/my.js";
 import {permsToRouter} from "@/perm/perm.js";
 import {useI18n} from "vue-i18n";
 import {oauthBindUser, oauthLinuxDoLogin, oauthGithubLogin, oauthGoogleLogin} from "@/request/ouath.js";
+import {useEmailStore} from '@/store/email';
 
 const {t} = useI18n();
 const accountStore = useAccountStore();
@@ -439,6 +440,8 @@ const submit = () => {
 }
 
 async function saveToken(token) {
+  accountStore.$reset();
+  useEmailStore().$reset();
   localStorage.setItem('token', token)
   refreshWebsiteConfig()
   const user = await loginUserInfo();

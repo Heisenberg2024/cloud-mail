@@ -17,14 +17,18 @@ export const useEmailStore = defineStore('email', {
         },
         sendScroll: null,
         detailMap: {},
+        detailVersion: 0,
     }),
     persist: {
         pick: ['contentData'],
     },
     actions: {
         fetchList(request) {
+            const version = this.detailVersion;
             return request(0).then(data => {
+                if (version !== this.detailVersion) return data;
                 request(1).then(fullData => {
+                    if (version !== this.detailVersion) return;
                     const list = Array.isArray(fullData) ? fullData : fullData?.list
                     this.applyFullList(list)
                 }).catch(e => {
@@ -32,6 +36,11 @@ export const useEmailStore = defineStore('email', {
                 })
                 return data
             })
+        },
+        invalidateDetails(clearContent = false) {
+            this.detailVersion++;
+            this.detailMap = {};
+            if (clearContent || !['readonly', 'physics'].includes(this.contentData.delType)) this.contentData.email = null;
         },
         applyFullList(list) {
             if (!list?.length) return
@@ -47,7 +56,7 @@ export const useEmailStore = defineStore('email', {
                     item.unread = EmailUnreadEnum.READ
                 }
                 this.detailMap[item.emailId] = item
-                if (currentId && item.emailId === currentId) {
+                if (currentId && item.emailId === currentId && !['readonly', 'physics'].includes(this.contentData.delType)) {
                     this.contentData.email = item
                 }
             }

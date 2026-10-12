@@ -1,6 +1,16 @@
 <template>
   <div class="email-list-box">
-    <emailScroll ref="sysEmailScroll"
+    <div v-if="mailboxId !== undefined || mailboxPicker" class="managed-header">
+      <el-button size="small" @click="backToMailboxes">{{ t('allMailboxes') }}</el-button>
+      <span class="managed-title">{{ accountStore.managedAccount.email || t('mailboxChoose') }}</span>
+      <el-tag type="info">{{ t('mailboxReadOnly') }}</el-tag>
+      <span v-if="accountStore.managedAccount.ownerEmail" class="managed-owner">{{ t('mailboxOwner') }}: {{ accountStore.managedAccount.ownerEmail }}</span>
+      <el-button v-if="accountStore.managedAccount.userId" size="small" @click="managerShow = true">{{ t('mailboxManageOwner') }}</el-button>
+      <el-button size="small" @click="uiStore.accountShow = true">{{ t('selectEmail') }}</el-button>
+    </div>
+    <el-empty v-if="mailboxPicker" :description="t('mailboxChoose')" />
+    <emailScroll v-else ref="sysEmailScroll" :key="mailboxId || 'global'" class="managed-scroll"
+                 :read-only="mailboxId !== undefined"
                  :get-emailList="getEmailList"
                  :email-delete="allEmailDelete"
                  :star-add="starAdd"
@@ -9,7 +19,7 @@
                  show-user-info
                  show-status
                  actionLeft="4px"
-                 :show-account-icon="false"
+                 :show-account-icon="mailboxId !== undefined"
                  :time-sort="params.timeSort"
                  :item-height="65"
                  @jump="jumpContent"
@@ -22,7 +32,7 @@
         <el-input
             v-model="searchValue"
             :placeholder="$t('searchByContent')"
-            class="search-input"
+            class="search-input" @keyup.enter="search"
         >
           <template #prefix>
             <div @click.stop="openSelect">
@@ -34,8 +44,8 @@
               >
                 <el-option key="3" :label="$t('sender')" :value="'name'"/>
                 <el-option key="4" :label="$t('subject')" :value="'subject'"/>
-                <el-option key="1" :label="$t('user')" :value="'user'"/>
-                <el-option key="2" :label="$t('selectEmail')" :value="'account'"/>
+                <el-option v-if="mailboxId === undefined" key="1" :label="$t('user')" :value="'user'"/>
+                <el-option v-if="mailboxId === undefined" key="2" :label="$t('selectEmail')" :value="'account'"/>
               </el-select>
               <div class="search-type">
                 <span>{{ selectTitle }}</span>
@@ -48,17 +58,18 @@
           <el-option key="1" :label="$t('all')" value="all"/>
           <el-option key="3" :label="$t('received')" value="receive"/>
           <el-option key="2" :label="$t('sent')" value="send"/>
-          <el-option key="4" :label="$t('selectDeleted')" value="delete"/>
-          <el-option key="4" :label="$t('noRecipientTitle')" value="noone"/>
+          <el-option v-if="mailboxId === undefined" key="4" :label="$t('selectDeleted')" value="delete"/>
+          <el-option v-if="mailboxId === undefined" key="5" :label="$t('noRecipientTitle')" value="noone"/>
         </el-select>
         <Icon class="icon" icon="iconoir:search" @click="search" width="20" height="20"/>
         <Icon class="icon" @click="changeTimeSort" icon="material-symbols-light:timer-arrow-down-outline"
               v-if="params.timeSort === 0" width="28" height="28"/>
         <Icon class="icon" @click="changeTimeSort" icon="material-symbols-light:timer-arrow-up-outline" v-else
               width="28" height="28"/>
-        <Icon class="icon clear" icon="fluent:broom-sparkle-16-regular" width="22" height="22" @click="openBathDelete"/>
+        <Icon v-if="mailboxId === undefined" class="icon clear" icon="fluent:broom-sparkle-16-regular" width="22" height="22" @click="openBathDelete"/>
       </template>
     </emailScroll>
+    <mailbox-manager v-if="userStore.user.type === 0" v-model="managerShow" :user-id="accountStore.managedAccount.userId" />
     <el-dialog v-model="showBathDelete" :title="$t('clearEmail')" width="335"
                @closed="closedClear">
       <div class="clear-email">
@@ -90,10 +101,11 @@
 <script setup>
 import {starAdd, starCancel} from "@/request/star.js";
 import emailScroll from "@/components/email-scroll/index.vue"
-import {computed, defineOptions, reactive, ref, watch, onMounted} from "vue";
+import {computed, defineOptions, reactive, ref, watch, onMounted, onUnmounted} from "vue";
 import {useEmailStore} from "@/store/email.js";
 import {
   allEmailList,
+  allEmailDetail,
   allEmailDelete,
   allEmailBatchDelete,
   allEmailLatest
@@ -105,12 +117,25 @@ import {toUtc} from "@/utils/day.js";
 import {sleep} from "@/utils/time-utils.js";
 import {useSettingStore} from "@/store/setting.js";
 import { useRoute } from 'vue-router'
+import {useAccountStore} from '@/store/account';
+import {useUserStore} from '@/store/user';
+import {useUiStore} from '@/store/ui';
+import {adminAccountList} from '@/request/account';
+import MailboxManager from '@/components/mailbox-manager/index.vue';
 
 defineOptions({
   name: 'all-email'
 })
 
 const route = useRoute()
+const accountStore = useAccountStore(), userStore = useUserStore(), uiStore = useUiStore();
+const mailboxId = ref(route.query.accountId === undefined ? undefined : Number(route.query.accountId));
+const mailboxPicker = ref(route.query.mailboxes === 'all');
+const managerShow = ref(false);
+let viewVersion = 0;
+let detailSequence = 0;
+let metadataSequence = 0;
+let polling = true;
 const {t} = useI18n();
 const emailStore = useEmailStore();
 const settingStore = useSettingStore();
@@ -122,8 +147,14 @@ const showBathDelete = ref(false)
 const clearLoading = ref(false)
 
 onMounted(() => {
+  if (mailboxPicker.value && userStore.user.type === 0) {
+    accountStore.mailboxView = 'all';
+    uiStore.accountShow = true;
+  }
+  loadMailbox();
   latest();
 })
+onUnmounted(() => { polling = false; viewVersion++; metadataSequence++; });
 
 const openSelect = () => {
   mySelect.value.toggleMenu()
@@ -173,7 +204,7 @@ const selectTitle = computed(() => {
 })
 
 const paramsStar = localStorage.getItem('all-email-params')
-if (paramsStar) {
+if (paramsStar && mailboxId.value === undefined && !mailboxPicker.value) {
   const locaParams = JSON.parse(paramsStar)
   params.type = locaParams.type
   params.timeSort = locaParams.timeSort
@@ -182,10 +213,51 @@ if (paramsStar) {
 }
 
 watch(() => params, () => {
-  localStorage.setItem('all-email-params', JSON.stringify(params))
+  if (mailboxId.value === undefined && !mailboxPicker.value) localStorage.setItem('all-email-params', JSON.stringify(params))
 }, {
   deep: true
 })
+
+async function loadMailbox() {
+  const sequence = ++metadataSequence;
+  if (mailboxId.value === undefined || userStore.user.type !== 0) return;
+  accountStore.mailboxView = 'all';
+  accountStore.managedAccount = {};
+  const data = await adminAccountList({accountId: mailboxId.value, size: 1});
+  if (sequence !== metadataSequence) return;
+  accountStore.managedAccount = data.list[0] || {};
+}
+watch(() => [route.name, route.query.accountId, route.query.mailboxes], () => {
+  if (route.name !== 'all-email') return;
+  const id = route.query.accountId === undefined ? undefined : Number(route.query.accountId);
+  const picker = route.query.mailboxes === 'all';
+  if (id === mailboxId.value && picker === mailboxPicker.value) return;
+  viewVersion++;
+  emailStore.contentData.email = null;
+  mailboxId.value = id;
+  mailboxPicker.value = picker;
+  if (picker && userStore.user.type === 0) {
+    accountStore.mailboxView = 'all';
+    accountStore.managedAccount = {};
+  }
+  searchValue.value = '';
+  Object.assign(params, {timeSort: 0, type: 'receive', userEmail: null, accountEmail: null, name: null, subject: null, searchType: 'name'});
+  loadMailbox();
+}, {flush: 'sync'});
+watch(() => accountStore.ownershipVersion, () => {
+  viewVersion++;
+  loadMailbox();
+  sysEmailScroll.value?.refreshList?.();
+  if (route.name === 'content' && ['readonly', 'physics'].includes(emailStore.contentData.delType) && emailStore.contentData.email?.emailId) {
+    jumpContent(emailStore.contentData.email);
+  }
+});
+async function backToMailboxes() {
+  accountStore.mailboxView = 'all';
+  accountStore.managedAccount = {};
+  await router.push({name: 'all-email', query: {mailboxes: 'all'}});
+  uiStore.accountShow = true;
+}
 
 function openBathDelete() {
   showBathDelete.value = true
@@ -230,12 +302,15 @@ function batchDelete() {
 }
 
 function rightSearch(type, value) {
+  if (mailboxId.value !== undefined && ['user', 'account'].includes(type)) return;
   params.searchType = type;
   searchValue.value = value;
   search();
 }
 
 function refreshBefore() {
+  viewVersion++;
+  if (mailboxId.value !== undefined) return;
   searchValue.value = null
   params.timeSort = 0
   params.type = 'receive'
@@ -247,6 +322,7 @@ function refreshBefore() {
 }
 
 function search() {
+  viewVersion++;
 
   params.userEmail = null
   params.accountEmail = null
@@ -281,28 +357,39 @@ function typeSelectChange() {
   search()
 }
 
-function jumpContent(email) {
-  emailStore.contentData.email = emailStore.toContentEmail(email)
-  emailStore.contentData.delType = 'physics'
+async function jumpContent(email) {
+  const sequence = ++detailSequence;
+  const accountId = mailboxId.value;
+  const version = viewVersion;
+  // Fetch a fresh detail under the same exact scope; never use another view's cache.
+  emailStore.contentData.email = {...email, content: '', text: '', attList: []};
+  emailStore.contentData.delType = accountId === undefined ? 'physics' : 'readonly';
+  emailStore.contentData.accountId = accountId;
+  emailStore.contentData.showUnread = false;
   emailStore.contentData.showStar = false
   emailStore.contentData.showReply = false
-  router.push({name: 'content'})
+  await router.push({name: 'content', query: accountId === undefined ? {} : {accountId}});
+  const detail = await allEmailDetail({emailId: email.emailId, accountId});
+  if (sequence !== detailSequence || version !== viewVersion || accountId !== mailboxId.value || route.name !== 'content' || Number(route.query.accountId || 0) !== Number(accountId || 0) || emailStore.contentData.email?.emailId !== email.emailId) return;
+  emailStore.contentData.email = detail;
 }
 
 
 function getEmailList(emailId, size) {
-  return emailStore.fetchList(full => allEmailList({emailId, size, full, ...params}))
+  const query = {...params, accountId: mailboxId.value};
+  return allEmailList({emailId, size, full: 0, ...query});
 }
 
 async function latest() {
 
-  while (true) {
+  while (polling) {
 
     let autoRefresh = settingStore.settings.autoRefresh;
 
     await sleep(autoRefresh > 1 ? autoRefresh * 1000 : 3000);
+    if (!polling) return;
 
-    const latestId = sysEmailScroll.value.latestEmail?.emailId
+    const latestId = sysEmailScroll.value?.latestEmail?.emailId
 
     if (autoRefresh < 2) {
       continue
@@ -312,7 +399,7 @@ async function latest() {
       continue
     }
 
-    if (route.name !== 'all-email') {
+    if (route.name !== 'all-email' || mailboxPicker.value) {
       continue
     }
 
@@ -323,8 +410,9 @@ async function latest() {
 
     try {
 
-      const curTimeSort = params.timeSort
-      let list = await allEmailLatest(latestId)
+      const version = viewVersion;
+      const query = {...params, accountId: mailboxId.value};
+      let list = await allEmailLatest(latestId, query);
 
       if (list.length === 0) {
         continue
@@ -335,13 +423,12 @@ async function latest() {
       }
 
       // 确保回来之后条件没变
-      if (params.timeSort !== curTimeSort) {
+      if (version !== viewVersion || route.name !== 'all-email') {
         continue
       }
 
-      emailStore.applyFullList(list)
-
       for (let email of list) {
+        if (version !== viewVersion || route.name !== 'all-email') break;
 
         sysEmailScroll.value.addItem(email)
         await sleep(50)
@@ -396,10 +483,16 @@ async function latest() {
 </style>
 <style scoped lang="scss">
 .email-list-box {
+  display: flex;
+  flex-direction: column;
   height: 100%;
   width: 100%;
   overflow: hidden;
 }
+.managed-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px; border-bottom: 1px solid var(--el-border-color); }
+.managed-title, .managed-owner { overflow-wrap: anywhere; min-width: 0; }
+.managed-owner { color: var(--el-text-color-secondary); font-size: 12px; }
+.managed-scroll { flex: 1; min-height: 0; }
 
 
 .search {
