@@ -84,6 +84,10 @@ pnpm exec wrangler dev --local --config wrangler-local.toml --persist-to /tmp/cl
 
 wrangler-unit.toml 是独立 Worker 测试配置，不需要先构建前端；wrangler-local.toml 用于包含 assets 的本地页面及 dry-run。两份配置中 ID 全为本地模拟值、Secret 为测试专用；不得用于线上部署。`test` 已改为 Vitest 本地测试；原测试环境部署命令改名 `test:deploy`，不会作为测试调用。Workers 测试池沿用锁定版本，其 workerd 最高兼容日期 2025-03-10，低于生产配置 2025-06-04；生产行为仍需部署管理员验收。
 
+## Telegram 转发兼容性修复
+
+若升级后所有 Telegram 请求出现 `network/timeout failure`，本地原生 Workers 测试已复现一个代码回归：当前 workerd 拒绝 `redirect: error`，请求在发出前就抛异常；旧测试直接替换 fetch，绕过了运行时参数校验。Telegram、Webhook 和 DoH 请求均已改为 `manual`，收到 3xx 明确失败且不跟随，继续保护 Token / Authorization。新增原生 fetch 的出站拦截回归测试，禁止实际网络连接。重新发布修复后的 Worker，无需重新迁移数据库或修改 Token/Secret。
+
 ## 执行与安全边界
 
 - 沿用既有 Salt + SHA-256 密码机制，不存明文。新独立密码及重置密码须 8–128 位；注册流程沿用原约束。

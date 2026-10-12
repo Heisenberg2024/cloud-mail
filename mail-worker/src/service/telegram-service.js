@@ -7,23 +7,47 @@ import emailMsgTemplate from '../template/email-msg';
 import emailTextTemplate from '../template/email-text';
 import emailHtmlTemplate from '../template/email-html';
 
+function requestFailure(method, error) {
+	const reason =
+		error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'request timed out or aborted (5000 ms)' : 'request/network failure';
+	return { ok: false, error: `Telegram ${method} ${reason}` };
+}
+
 async function telegramRequest(config, method, body = {}) {
+	let response;
 	try {
-		const response = await fetch(`https://api.telegram.org/bot${config.token}/${method}`, {
+		response = await fetch(`https://api.telegram.org/bot${config.token}/${method}`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(body),
-			redirect: 'error',
+			// Workers runtimes used by this project reject redirect: 'error'.
+			// Manual mode keeps credentials on the original host and lets us reject 3xx.
+			redirect: 'manual',
 			signal: AbortSignal.timeout(5000),
 		});
-		const data = await response.json();
-		return {
-			ok: response.ok && data.ok === true,
-			error: response.ok && data.ok ? '' : `Telegram ${method} failed (HTTP ${response.status})`,
-		};
-	} catch {
-		return { ok: false, error: `Telegram ${method} network/timeout failure` };
+	} catch (error) {
+		return requestFailure(method, error);
 	}
+	if (!response.ok) {
+		try {
+			await response.body?.cancel();
+		} catch {
+			/* Keep the known HTTP failure. */
+		}
+		const reason = response.status >= 300 && response.status < 400 ? 'redirect blocked' : 'failed';
+		return { ok: false, error: `Telegram ${method} ${reason} (HTTP ${response.status})` };
+	}
+	let data;
+	try {
+		data = await response.json();
+	} catch (error) {
+		if (error?.name === 'TimeoutError' || error?.name === 'AbortError') return requestFailure(method, error);
+		return { ok: false, error: `Telegram ${method} invalid JSON response (HTTP ${response.status})` };
+	}
+	return {
+		ok: data?.ok === true,
+		error: data?.ok === true ? '' : `Telegram ${method} API rejected request (HTTP ${response.status})`,
+	};
 }
 
 const telegramService = {

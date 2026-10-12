@@ -641,7 +641,7 @@ describe('Migration, security and compatibility', () => {
 					: new Response('auth-secret', { status: 302, headers: { Location: 'http://127.0.0.1' } }),
 			);
 		await pushRouterService.route(c, { emailId: 10 }, message());
-		expect(fetchMock.mock.calls.find(([url]) => String(url).includes('notify.'))[1].redirect).toBe('error');
+		expect(fetchMock.mock.calls.find(([url]) => String(url).includes('notify.'))[1].redirect).toBe('manual');
 		expect((await first('SELECT error FROM push_delivery_log')).error).not.toContain('auth-secret');
 	});
 	it('rejects loops, normalizes addresses and validates special IP ranges', () => {

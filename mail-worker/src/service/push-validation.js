@@ -88,7 +88,7 @@ export async function assertPublicDns(url) {
 		['A', 'AAAA'].map(async (type) => {
 			const res = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${type}`, {
 				headers: { Accept: 'application/dns-json' },
-				redirect: 'error',
+				redirect: 'manual',
 				signal: AbortSignal.timeout(3000),
 			});
 			if (!res.ok) throw new Error('DNS validation failed');

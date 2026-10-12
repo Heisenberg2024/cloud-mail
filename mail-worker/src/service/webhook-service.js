@@ -31,15 +31,18 @@ const webhookService = {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json', ...(secret ? { Authorization: secret } : {}) },
 					body,
-					redirect: 'error',
+					redirect: 'manual',
 					signal: AbortSignal.timeout(timeout),
 				});
 				await res.body?.cancel();
 				if (res.ok) return { status: 'success', attempts, error: '' };
-				error = `Webhook HTTP ${res.status}`;
+				error = res.status >= 300 && res.status < 400 ? `Webhook redirect blocked (HTTP ${res.status})` : `Webhook HTTP ${res.status}`;
 				if (res.status < 500 && res.status !== 429) break;
-			} catch {
-				error = 'Webhook network/timeout/redirect failure';
+			} catch (cause) {
+				error =
+					cause?.name === 'TimeoutError' || cause?.name === 'AbortError'
+						? `Webhook request timed out or aborted (${timeout} ms)`
+						: 'Webhook request/network failure';
 			}
 		}
 		return { status: 'failed', attempts, error };
