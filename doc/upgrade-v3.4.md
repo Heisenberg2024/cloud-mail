@@ -107,6 +107,8 @@ wrangler-unit.toml 是独立 Worker 测试配置，不需要先构建前端；wr
 
 `View` 沿用 Telegram [内嵌 Web App 按钮](https://core.telegram.org/bots/api#inlinekeyboardbutton)，在与机器人的私聊中直接打开邮件；无需登录，链接 15 分钟有效。修复发布后对新邮件通知生效，已发送的历史消息不会补加按钮；不涉及数据库迁移或 Token/Secret 变更。
 
+若 `View` 已打开但 HTML 邮件正文白屏，原模板通过内联 JavaScript 将正文注入 Shadow DOM，而查看接口的 `sandbox` CSP 禁止脚本执行，最终只留下空容器。正文现改为服务端直接生成 HTML，保留原邮件样式、body 属性、表格和图片，移除脚本/嵌入框架/事件处理属性；纯文本中的 HTML 符号按字面显示。沿用原 CSP、权限校验及 15 分钟有效期，无需新增 Secret、迁移数据库或构建前端。发布修复后的 Worker 后使用未过期链接，或通过“再次投递”生成新链接验收。回归检查实际正文 DOM，本地浏览器已在相同 CSP 下对比确认修复前白屏、修复后可见；这不替代 Telegram 真机验收。
+
 ## 投递记录分页与再次投递
 
 - 投递记录按 ID 倒序在服务端分页，默认每页 10 条，可查看保留期内的全部记录。`GET /api/push/logs?page=1&size=10` 返回 `{list,total,page,size}`；size 上限 100，超出末页会回落最后一页。列表包含邮件主题、当前目标名称及不可重投原因。翻页请求失败时恢复最后成功页码，避免页码与旧记录错配。

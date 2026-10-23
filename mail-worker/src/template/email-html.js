@@ -2,137 +2,46 @@ import { parseHTML } from 'linkedom';
 import domainUtils from '../utils/domain-uitls';
 
 export default function emailHtmlTemplate(html, domain) {
-
-	const { document } = parseHTML(html);
-	document.querySelectorAll('script').forEach(script => script.remove());
-	html = document.toString();
-	html = html.replace(/{{domain}}/g, domainUtils.toOssDomain(domain) + '/');
-	const safeHtmlJson = JSON.stringify(html).replace(/</g, '\\u003C');
-
-	return `<!DOCTYPE html>
-<html lang='en' >
+	const source = parseHTML(html.replace(/{{domain}}/g, (domainUtils.toOssDomain(domain) || '') + '/')).document;
+	const sourceBody = source.querySelector('body');
+	const { document } = parseHTML(`<!DOCTYPE html>
+<html lang="en">
 <head>
-    <meta charset='UTF-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        * {
-            box-sizing: border-box;
+        * { box-sizing: border-box; }
+        html { background: #fff; overflow-wrap: anywhere; }
+        body {
             margin: 0;
-            padding: 0;
-            background: #FFF;
-        }
-
-        .content-box {
-        		padding: 15px 10px;
-            width: 100%;
-            height: 100%;
-            overflow: auto; /* 改为 auto 允许滚动 */
+            padding: 15px 10px;
+            color: #13181d;
+            background: #fff;
             font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-size: 14px;
+            line-height: 1.5;
+            overflow: auto;
         }
-
-        .content-html {
-            width: 100%;
-            height: 100%;
-        }
+        img { max-width: 100%; height: auto; }
+        table { max-width: 100%; }
+        pre { white-space: pre-wrap; overflow-wrap: anywhere; }
     </style>
 </head>
-<body>
-    <div class='content-box'>
-        <div id='container' class='content-html'></div>
-    </div>
+<body></body>
+</html>`);
 
-    <script>
-
-        function renderHTML(html) {
-            const container = document.getElementById('container');
-            const shadowRoot = container.attachShadow({ mode: 'open' });
-
-            // 提取 <body> 的 style 属性
-            const bodyStyleRegex = /<body[^>]*style="([^"]*)"[^>]*>/i;
-            const bodyStyleMatch = html.match(bodyStyleRegex);
-            const bodyStyle = bodyStyleMatch ? bodyStyleMatch[1] : '';
-
-            // 移除 <body> 标签
-            const cleanedHtml = html.replace(/<\\/?body[^>]*>/gi, '');
-
-            // 渲染内容
-            shadowRoot.innerHTML = \`
-                <style>
-                    :host {
-                        all: initial;
-                        width: 100%;
-                        height: 100%;
-                        font-family: Inter, -apple-system, BlinkMacSystemFont,
-                                    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-                        font-size: 14px;
-                        line-height: 1.5;
-                        color: #13181D;
-                        word-break: break-word;
-                        overflow: auto; /* 添加滚动 */
-                    }
-
-                    h1, h2, h3, h4 {
-                        font-size: 18px;
-                        font-weight: 700;
-                    }
-
-                    p {
-                        margin: 0;
-                    }
-
-                    a {
-                        text-decoration: none;
-                        color: #0E70DF;
-                    }
-
-                    .shadow-content {
-                        background: #FFFFFF;
-                        width: fit-content;
-                        height: fit-content;
-                        min-width: 100%;
-                        \${bodyStyle ? bodyStyle : ''} /* 注入 body 的 style */
-                    }
-
-                    img:not(table img) {
-                        max-width: 100% !important;
-                        height: auto !important;
-                    }
-                </style>
-                <div class="shadow-content">
-                    \${cleanedHtml}
-                </div>
-            \`;
-
-            // 自动缩放
-            autoScale(shadowRoot, container);
-        }
-
-        function autoScale(shadowRoot, container) {
-
-            if (!shadowRoot || !container) return;
-
-            const parent = container;
-            const shadowContent = shadowRoot.querySelector('.shadow-content');
-
-            if (!shadowContent) return;
-
-            const parentWidth = parent.offsetWidth;
-            const childWidth = shadowContent.scrollWidth;
-
-            if (childWidth === 0) return;
-
-            const scale = parentWidth / childWidth;
-
-            const hostElement = shadowRoot.host;
-            hostElement.style.zoom = scale;
-        }
-
-        // 使用示例
-        const exampleHtml = ${safeHtmlJson};
-
-        // 渲染HTML
-        renderHTML(exampleHtml);
-    </script>
-</body>
-</html>`
+	// Render on the server: the mail-view CSP deliberately disables all scripts.
+	// Keep mail-specific CSS and body presentation without a JS/shadow-DOM bootstrap.
+	for (const style of source.querySelectorAll('head style')) document.head.appendChild(style.cloneNode(true));
+	if (sourceBody) {
+		for (const attribute of sourceBody.attributes) document.body.setAttribute(attribute.name, attribute.value);
+	}
+	document.body.innerHTML = sourceBody ? sourceBody.innerHTML : source.toString();
+	document.querySelectorAll('script,iframe,frame,frameset,object,embed,base,meta[http-equiv]').forEach(node => node.remove());
+	for (const element of document.querySelectorAll('*')) {
+		for (const attribute of [...element.attributes]) {
+			if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);
+		}
+	}
+	return document.toString();
 }

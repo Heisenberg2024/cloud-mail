@@ -20,6 +20,7 @@ import starService from '../src/service/star-service';
 import KvConst from '../src/const/kv-const';
 import { email as receiveEvent } from '../src/email/email';
 import { normalizeEmail, validateDestination, validateWebhookUrl, isPublicIp } from '../src/service/push-validation';
+import { parseHTML } from 'linkedom';
 
 function context(user = { userId: 1, email: env.admin, isDel: 0, status: 0 }) {
 	const state = new Map([['user', user]]);
@@ -1015,6 +1016,18 @@ describe('Migration, security and compatibility', () => {
 		expect(await telegramService.getEmailContent(c, { token: newToken })).not.toContain('Access denied');
 		await sql('UPDATE user SET is_del=1 WHERE user_id=?', upgraded.userId);
 		expect(await telegramService.getEmailContent(c, { token: newToken })).toContain('Access denied');
+	});
+	it('serves visible HTML mail under the unchanged script-blocking policy', async () => {
+		const destinationId = await addTarget('HTML viewer');
+		await sql('UPDATE email SET content=?,text=? WHERE email_id=10', '<p id="mail-body">HTML mail content</p>', 'Plain fallback');
+		const token = await jwtUtils.generateToken(c, { purpose: 'mail-view', emailId: 10, accountId: a.accountId, userId: 1, destinationId }, 900);
+		const response = await worker.fetch(new Request(`https://mail.example.com/api/telegram/getEmail/${token}`), env, {});
+		const { document } = parseHTML(await response.text());
+		expect(document.body.querySelector('#mail-body')?.textContent).toBe('HTML mail content');
+		expect(document.querySelector('script')).toBeNull();
+		expect(response.headers.get('Content-Security-Policy')).toBe("sandbox; default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'");
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+		expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
 	});
 	it('tests distinguish Bot validity, Chat validity and sending; saving never sends', async () => {
 		const network = await mockNetwork();
