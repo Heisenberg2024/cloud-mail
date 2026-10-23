@@ -27,6 +27,7 @@ const en = {
     "pushKeepSecret": "Leave blank to keep existing secret",
     "pushClearSecret": "Explicitly clear existing secret",
     "pushMailViewOrigin": "Mail viewing site (HTTPS)",
+    "pushMailViewHelp": "Defaults to the current site; leave blank to use the original site setting. View opens the email inside a private Telegram chat. Links expire in 15 minutes.",
     "pushTemplatefrom": "Sender",
     "pushTemplateto": "Recipient",
     "pushTemplatetext": "Body",

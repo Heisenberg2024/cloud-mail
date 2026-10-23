@@ -103,6 +103,10 @@ wrangler-unit.toml 是独立 Worker 测试配置，不需要先构建前端；wr
 
 若升级后所有 Telegram 请求出现 `network/timeout failure`，本地原生 Workers 测试已复现一个代码回归：当前 workerd 拒绝 `redirect: error`，请求在发出前就抛异常；旧测试直接替换 fetch，绕过了运行时参数校验。Telegram、Webhook 和 DoH 请求均已改为 `manual`，收到 3xx 明确失败且不跟随，继续保护 Token / Authorization。新增原生 fetch 的出站拦截回归测试，禁止实际网络连接。重新发布修复后的 Worker，无需重新迁移数据库或修改 Token/Secret。
 
+若通知缺少 `View` 按钮，检查目标的“邮件查看链接”是否开启。目标的“邮件查看站点”留空时会回退原 `setting.customDomain`；新建或编辑目标默认填入当前 HTTPS 站点，已有专用站点和显式关闭的选项保持原值。如果目标和原站点均未配置有效 HTTPS 地址，请在目标中填写实际邮件站点并保存。无有效站点时仍正常发送通知和验证码，不生成无效的查看按钮。
+
+`View` 沿用 Telegram [内嵌 Web App 按钮](https://core.telegram.org/bots/api#inlinekeyboardbutton)，在与机器人的私聊中直接打开邮件；无需登录，链接 15 分钟有效。修复发布后对新邮件通知生效，已发送的历史消息不会补加按钮；不涉及数据库迁移或 Token/Secret 变更。
+
 ## 执行与安全边界
 
 - 沿用既有 Salt + SHA-256 密码机制，不存明文。新独立密码及重置密码须 8–128 位；注册流程沿用原约束。

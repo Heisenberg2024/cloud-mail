@@ -186,3 +186,40 @@ test('reselecting an owned mailbox keeps its cached body, while switching mailbo
   assert.equal(accountStore.currentAccountId, 2);
   view.stop();
 });
+
+test('Telegram target creation and type switching default the mail viewer to the current site', () => {
+  const view = setup('../src/components/push-manager/index.vue', {
+    api: {}, onBeforeUnmount() {}, window: {location: {origin: 'https://current.example.com'}},
+  }, 'editDestination, resetConfig, targetForm');
+  view.editDestination();
+  assert.equal(view.targetForm.config.customDomain, 'https://current.example.com');
+  assert.equal(view.targetForm.config.viewLink, true);
+  view.targetForm.type = 'email'; view.resetConfig();
+  view.targetForm.type = 'telegram'; view.resetConfig();
+  assert.equal(view.targetForm.config.customDomain, 'https://current.example.com');
+  view.stop();
+});
+
+test('editing a Telegram target fills a missing viewer site without overriding its existing site or opt-out', () => {
+  const view = setup('../src/components/push-manager/index.vue', {
+    api: {}, onBeforeUnmount() {}, window: {location: {origin: 'https://current.example.com'}},
+  }, 'editDestination, targetForm');
+  const old = {id: 'old', type: 'telegram', enabled: 1, config: {customDomain: ''}};
+  view.editDestination(old);
+  assert.equal(view.targetForm.config.customDomain, 'https://current.example.com');
+  assert.equal(view.targetForm.config.viewLink, true);
+  assert.deepEqual(old.config, {customDomain: ''});
+  view.editDestination({id: 'custom', type: 'telegram', enabled: 1, config: {customDomain: 'https://custom.example.com', viewLink: false}});
+  assert.equal(view.targetForm.config.customDomain, 'https://custom.example.com');
+  assert.equal(view.targetForm.config.viewLink, false);
+  view.stop();
+});
+
+test('local HTTP development never defaults Telegram viewing to an unsupported HTTP site', () => {
+  const view = setup('../src/components/push-manager/index.vue', {
+    api: {}, onBeforeUnmount() {}, window: {location: {origin: 'http://localhost:5173'}},
+  }, 'editDestination, targetForm');
+  view.editDestination();
+  assert.equal(view.targetForm.config.customDomain, '');
+  view.stop();
+});

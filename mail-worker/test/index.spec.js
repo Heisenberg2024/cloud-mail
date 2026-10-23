@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:test';
+import { env, fetchMock } from 'cloudflare:test';
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../src';
 import { dbInit } from '../src/init/init';
@@ -108,6 +108,71 @@ beforeEach(async () => {
 	await sql('INSERT INTO star(user_id,email_id) VALUES (1,10),(1,12)');
 });
 afterEach(() => vi.restoreAllMocks());
+
+describe('Telegram in-app mail viewing', () => {
+	let sent;
+	beforeEach(() => {
+		sent = [];
+		fetchMock.activate();
+		fetchMock.disableNetConnect();
+		fetchMock.get('https://api.telegram.org')
+			.intercept({ method: 'POST', path: `/bot${tg1}/sendMessage` })
+			.reply(({ body }) => {
+				sent.push(JSON.parse(body));
+				return { statusCode: 200, data: JSON.stringify({ ok: true }) };
+			});
+	});
+	afterEach(() => {
+		try { fetchMock.assertNoPendingInterceptors(); }
+		finally { fetchMock.deactivate(); }
+	});
+	async function deliver(config = {}) {
+		const id = await addTarget('Mail view', 'telegram', { ...tgConfig(tg1), customDomain: '', ...config });
+		const destination = await first('SELECT * FROM push_destination WHERE id=?', id);
+		destination.config = JSON.parse(destination.config);
+		await sql('UPDATE email SET text=? WHERE email_id=10', 'Original mail body');
+		const result = await pushRouterService.deliver(c, {
+			emailId: 10, accountId: a.accountId, userId: 1, subject: 'Received', text: 'Original mail body', code: '123456',
+		}, destination);
+		expect(result).toMatchObject({ status: 'success', error: '' });
+		return { id, keyboard: sent[0].reply_markup?.inline_keyboard || [] };
+	}
+	it('restores the Web App button from the original site and opens the scoped email without login', async () => {
+		await settingService.set(c, { customDomain: 'original.example.com/' });
+		const { id, keyboard } = await deliver();
+		const button = keyboard.flat().find(button => button.web_app);
+		expect(button).toBeDefined();
+		const url = new URL(button.web_app.url);
+		expect(url.origin).toBe('https://original.example.com');
+		expect(url.pathname).toMatch(/^\/api\/telegram\/getEmail\//);
+		const token = url.pathname.split('/').pop();
+		const payload = await jwtUtils.verifyToken(c, token);
+		expect(payload).toMatchObject({ purpose: 'mail-view', emailId: 10, accountId: a.accountId, userId: 1, destinationId: id });
+		expect(payload.exp - payload.iat).toBe(900);
+		const response = await worker.fetch(new Request(url), env, {});
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain('Original mail body');
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+		expect(response.headers.get('Content-Security-Policy')).toContain('sandbox');
+		expect(keyboard.flat()).toContainEqual({ text: '123456', copy_text: { text: '123456' } });
+	});
+	it('prefers the destination site over the original global setting', async () => {
+		await settingService.set(c, { customDomain: 'original.example.com' });
+		const { keyboard } = await deliver({ customDomain: 'https://target.example.com/' });
+		const button = keyboard.flat().find(button => button.web_app);
+		expect(new URL(button.web_app.url).origin).toBe('https://target.example.com');
+	});
+	it.each(['', 'http://invalid.example.com'])('keeps notification and code copying usable without a valid fallback site (%s)', async (customDomain) => {
+		await settingService.set(c, { customDomain });
+		const { keyboard } = await deliver();
+		expect(keyboard).toEqual([[{ text: '123456', copy_text: { text: '123456' } }]]);
+	});
+	it('respects an explicitly disabled view button while preserving code copying', async () => {
+		await settingService.set(c, { customDomain: 'original.example.com' });
+		const { keyboard } = await deliver({ customDomain: 'https://target.example.com', viewLink: false });
+		expect(keyboard).toEqual([[{ text: '123456', copy_text: { text: '123456' } }]]);
+	});
+});
 
 describe('Mailbox independent login and D1 ownership', () => {
 	it('keeps attached mailboxes without login credentials', async () => {

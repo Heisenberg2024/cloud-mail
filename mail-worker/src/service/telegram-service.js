@@ -6,6 +6,7 @@ import jwtUtils from '../utils/jwt-utils';
 import emailMsgTemplate from '../template/email-msg';
 import emailTextTemplate from '../template/email-text';
 import emailHtmlTemplate from '../template/email-html';
+import { validateDestination } from './push-validation';
 
 function requestFailure(method, error) {
 	const reason =
@@ -87,7 +88,16 @@ const telegramService = {
 	async sendEmailToBot(c, emailRow, destination) {
 		const config = destination.config;
 		const keyboard = [];
-		if (config.viewLink && config.customDomain) {
+		let viewOrigin = config.customDomain || '';
+		if (config.viewLink !== false && !viewOrigin) {
+			const { customDomain } = await settingService.query(c);
+			try {
+				viewOrigin = validateDestination('telegram', { ...config, customDomain }, c.env).customDomain;
+			} catch {
+				// An invalid legacy site must not prevent the notification itself.
+			}
+		}
+		if (config.viewLink !== false && viewOrigin) {
 			const token = await jwtUtils.generateToken(
 				c,
 				{
@@ -99,7 +109,7 @@ const telegramService = {
 				},
 				900,
 			);
-			keyboard.push([{ text: 'View (15 min)', web_app: { url: `${config.customDomain}/api/telegram/getEmail/${token}` } }]);
+			keyboard.push([{ text: 'View', web_app: { url: `${viewOrigin}/api/telegram/getEmail/${token}` } }]);
 		}
 		if (config.showCode && emailRow.code && emailRow.code.length <= 256)
 			keyboard.push([{ text: emailRow.code, copy_text: { text: emailRow.code } }]);

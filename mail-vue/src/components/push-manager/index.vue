@@ -200,7 +200,9 @@
 						><el-input
 							v-model="targetForm.config.customDomain"
 							placeholder="https://mail.example.com"
-					/></el-form-item>
+						/><el-text type="info" size="small">{{
+							t('pushMailViewHelp')
+						}}</el-text></el-form-item>
 					<div class="option-grid">
 						<el-form-item
 							v-for="key in ['from', 'to', 'text']"
@@ -368,6 +370,9 @@ import { onMounted, reactive, ref, watch, onBeforeUnmount } from 'vue';
 import { useI18n } from 'vue-i18n';
 import * as api from '@/request/push';
 const { t } = useI18n();
+const currentViewOrigin = window.location.origin.startsWith('https://')
+	? window.location.origin
+	: '';
 const loading = ref(false),
 	busy = ref(false),
 	targets = ref([]),
@@ -427,7 +432,7 @@ function resetConfig() {
 					from: 'only-name',
 					to: 'show',
 					text: 'show',
-					customDomain: '',
+					customDomain: currentViewOrigin,
 					showCode: true,
 					viewLink: true,
 				}
@@ -444,6 +449,10 @@ function editDestination(d) {
 	);
 	targetForm.enabled = !!targetForm.enabled;
 	if (!d) resetConfig();
+	if (targetForm.type === 'telegram') {
+		targetForm.config.customDomain ||= currentViewOrigin;
+		targetForm.config.viewLink ??= true;
+	}
 	destinationShow.value = true;
 }
 async function run(action) {

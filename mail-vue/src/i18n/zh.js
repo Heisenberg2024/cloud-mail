@@ -27,6 +27,7 @@ const zh = {
     "pushKeepSecret": "留空保留已有密钥",
     "pushClearSecret": "明确清空已有密钥",
     "pushMailViewOrigin": "邮件查看站点（HTTPS）",
+    "pushMailViewHelp": "默认填入当前站点；留空时使用原站点配置。点击 View 可在 Telegram 私聊内打开邮件，链接 15 分钟有效。",
     "pushTemplatefrom": "显示发件人",
     "pushTemplateto": "显示收件人",
     "pushTemplatetext": "显示正文",
