@@ -3,6 +3,26 @@ import { parseHTML } from 'linkedom';
 import emailHtmlTemplate from '../src/template/email-html';
 import emailTextTemplate from '../src/template/email-text';
 import mailLayoutFixtures from './fixtures/telegram-mail-layout';
+import renderTelegramView, { STATIC_VIEW_CSP } from '../src/template/telegram-view';
+
+describe('Telegram View renderer selection', () => {
+	it('restores the existing responsive HTML renderer without changing its output or script policy', async () => {
+		const html = '<p>Existing renderer</p><table><tr><th>Item</th></tr></table>';
+		const result = await renderTelegramView({content: html}, '', 'responsive');
+		expect(result.html).toBe(emailHtmlTemplate(html, ''));
+		expect(result.csp).toBe(STATIC_VIEW_CSP);
+	});
+	it('restores the existing responsive plain text renderer including empty input', async () => {
+		for (const text of ['', '<literal> & text']) {
+			const result = await renderTelegramView({text}, '', 'responsive');
+			expect(result.html).toBe(emailTextTemplate(text));
+			expect(result.csp).toBe(STATIC_VIEW_CSP);
+		}
+	});
+	it('rejects unknown renderer configuration rather than widening the script policy', async () => {
+		await expect(renderTelegramView({content: '<p>Mail</p>'}, '', 'other')).rejects.toThrow('Unsupported telegram_view_renderer');
+	});
+});
 
 describe('Telegram mail rendering with scripts disabled', () => {
 	it('puts an HTML fragment directly in the returned body without a script bootstrap', () => {

@@ -13,7 +13,7 @@
 
 ### 上游 v3.4.0 集成
 
-本地集成上游 `c0009dd`，保留独立邮箱、管理员集中只读查看、多目标推送、投递记录分页/重投及 Telegram 无脚本预览。本次集成不执行推送、部署或线上数据库操作。
+本地集成上游 `c0009dd`，保留独立邮箱、管理员集中只读查看、多目标推送、投递记录分页/重投及 Telegram 响应式预览。后续 View 对比切换同时保留上游方式，当前默认值见下文。本次集成不执行推送、部署或线上数据库操作。
 
 - `email.sender_email` 保存 SMTP Envelope Sender，`send_email` 继续保存邮件 Header From。新增字段默认空字符串，不改写历史邮件身份或附件对象 Key。
 - 新增独立的 `upstream-v3.4` 迁移标记，避免已完成 fork 的 `v3.4-schema`/`v3.4` 升级时漏加字段。首次 API、收信、定时清理及显式初始化共用幂等准备；字段和该标记通过本地 D1 batch 回归验证原子完成、并发和失败回滚/重试。
@@ -122,13 +122,34 @@ wrangler-unit.toml 是独立 Worker 测试配置，不需要先构建前端；wr
 
 `View` 沿用 Telegram [内嵌 Web App 按钮](https://core.telegram.org/bots/api#inlinekeyboardbutton)，在与机器人的私聊中直接打开邮件；无需登录，链接 15 分钟有效。修复发布后对新邮件通知生效，已发送的历史消息不会补加按钮；不涉及数据库迁移或 Token/Secret 变更。
 
-若 `View` 已打开但 HTML 邮件正文白屏，原模板通过内联 JavaScript 将正文注入 Shadow DOM，而查看接口的 `sandbox` CSP 禁止脚本执行，最终只留下空容器。正文现改为服务端直接生成 HTML，保留原邮件样式、body 属性、表格和图片，移除脚本/嵌入框架/事件处理属性；纯文本中的 HTML 符号按字面显示。沿用原 CSP、权限校验及 15 分钟有效期，无需新增 Secret、迁移数据库或构建前端。发布修复后的 Worker 后使用未过期链接，或通过“再次投递”生成新链接验收。回归检查实际正文 DOM，本地浏览器已在相同 CSP 下对比确认修复前白屏、修复后可见；这不替代 Telegram 真机验收。
+若 `View` 已打开但 HTML 邮件正文白屏，原模板通过内联 JavaScript 将正文注入 Shadow DOM，而查看接口的 `sandbox` CSP 禁止脚本执行，最终只留下空容器。此前响应式方案改为服务端直接生成 HTML，保留原邮件样式、body 属性、表格和图片，移除脚本/嵌入框架/事件处理属性；纯文本中的 HTML 符号按字面显示。该方案仍完整保留为 `responsive` 模式，继续使用禁止脚本的原 CSP。
+
+### View 两种展示方式与回退
+
+为实际对比效果，当前代码默认使用上游 v3.4.0（`c0009dd`）的 View。上游模板单独保存在 `mail-worker/src/template/upstream/`，仅调整相对 import 路径；现有 `email-html.js`、`email-text.js`、`email-view-style.js` 三个响应式模板均未修改。
+
+可选 Worker 普通变量 `telegram_view_renderer` 控制后续查看请求：
+
+| 变量值 | 展示方式 |
+| --- | --- |
+| 未设置、空字符串或 `upstream` | 上游原始布局，Shadow DOM + 一次整体 zoom，HTML 默认 14px |
+| `responsive` | 现有服务端响应式布局，窄屏重排、局部表格滚动，默认 16px |
+
+若上游效果不合适，在所用 Wrangler 配置的现有 `[vars]` 中加入 `telegram_view_renderer = "responsive"`，或通过现有发布流程设置同名 Worker 变量；设为 `upstream` 可再切回。其他值会明确报配置错误。无需数据库字段、迁移、新 Secret 或前端界面改动；Worker 代码/变量需另行授权发布后才会影响线上。本轮没有发布或修改线上变量。
+
+上游 HTML 响应在保留 sandbox 隔离的同时，仅以当前响应的精确 SHA-256 哈希允许运行模板初始化脚本；不授予同源权限或任意 inline/eval 权限，邮件脚本、事件处理器和 `javascript:` 链接仍不能执行。纯文本及拒绝页继续禁止全部脚本。适配器另外转义纯文本，并在旧存储域名为空时修正附件占位地址；不改变上游布局或缩放代码。
+
+两种模式共用原签名校验、邮箱/用户/目标归属、15 分钟有效期、`no-store` 和 `no-referrer`。使用未过期链接重新打开即可应用当前模式；过期后需新链接，历史通知不会自动补按钮。需要发送通知或再次投递来生成链接时，另行确认实际发送授权。
+
+本次验证：Worker 140 项、前端 19 项测试及 Worker 本地 dry-run 通过；隔离本地浏览器使用真实响应 CSP 确认上游正文 DOM 已渲染并位于视口内、失败图片事件及 `javascript:` 链接均未执行。隐藏标签页的截图捕获为空白，未作为视觉验收证据。1 个只读子智能体独立复核无阻断项。没有使用生产邮件或线上数据库，Telegram 真机效果仍待用户后续实际验收。
+
+### 保留的响应式方案
 
 HTML 与纯文本预览共用小窗口阅读样式：默认 16px 字号与 1.6 行高，在 600px 内使用左右 4px、上下 8px 外层留白，并考虑设备安全区。HTML 邮件的常见固定长度横向 padding/margin（内联样式及可解析样式表）和旧式 cellpadding 同时限制到每层最多 4px，避免多层卡片把正文挤窄；保留纵向间距、auto 居中和发件人移动端媒体规则，按钮及数据表保留原间距。宽度约束、nowrap 和间距通过 CSS 变量回退保留桌面值；图片的内联重要宽高约束也参与适配，窄屏保持图片比例、默认正文不做整体缩小。单列布局表限制宽度，导航等多列表保留列宽关系；固定网格在窄屏改为单列、弹性布局允许换行，长链接/代码和 nowrap 正文可换行。含表头、多列、caption、明确 table/grid 角色及无嵌套的多行多列数据表（含无表头双列账单）保留完整内容，在独立区域横向滚动，presentation/none 布局表保持流式。复杂 calc/var 间距及无法解析的样式表保留原样。
 
 邮件正文与内部滚动区隐藏 Firefox/WebKit 滚动条，保留原生滚动行为，不用裁切正文来掩盖宽度问题。六类合成邮件样例位于 `mail-worker/test/fixtures/telegram-mail-layout.js`，覆盖多层卡片、图片/SVG、双列账单/宽数据表、长链接/代码、Grid/Flex 和纯文本。本地浏览器在 320/390/430px 的 18 组检查中页面宽度均等于视口、默认正文字号均为 16px；实际滚轮确认长邮件/纯文本末尾可达，表格可分别滑到最右端。布局测量仅对本机合成样例保留同源访问以读取尺寸/滚动值，邮件脚本仍禁用；另用原 CSP 检查实际排版，生产 CSP 未修改。
 
-已核对[上游邮件预览模板](https://github.com/maillab/cloud-mail/blob/main/mail-worker/src/template/email-html.js)：上游设置移动端 viewport，再用 JavaScript 的父容器宽度 / 正文 scrollWidth 做一次整体 zoom，并非响应式重排。当前通过 viewport、媒体查询和服务端样式适配实现窄屏阅读，不依赖该脚本，原权限和 CSP 不变。Worker 118 项测试通过；前轮已确认 1280px 下边距、卡片宽度和导航列宽与修改前一致。未使用生产邮件，未部署或完成 Telegram 真机验收。
+已核对[上游邮件预览模板](https://github.com/maillab/cloud-mail/blob/c0009ddae326197e22c44986b6537ca7d97e803a/mail-worker/src/template/email-html.js)：上游设置移动端 viewport，再用 JavaScript 的父容器宽度 / 正文 scrollWidth 做一次整体 zoom。保留的 `responsive` 模式通过 viewport、媒体查询和服务端样式适配实现窄屏阅读，不依赖该脚本，继续禁止脚本。该方案当时的 Worker 118 项测试通过；前轮已确认 1280px 下边距、卡片宽度和导航列宽与修改前一致。未使用生产邮件，未部署或完成 Telegram 真机验收。
 
 ## 投递记录分页与再次投递
 

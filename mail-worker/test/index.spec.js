@@ -1173,17 +1173,58 @@ describe('Migration, security and compatibility', () => {
 		await sql('UPDATE user SET is_del=1 WHERE user_id=?', upgraded.userId);
 		expect(await telegramService.getEmailContent(c, { token: newToken })).toContain('Access denied');
 	});
-	it('serves visible HTML mail under the unchanged script-blocking policy', async () => {
+	it('serves visible HTML mail in responsive mode under the unchanged script-blocking policy', async () => {
 		const destinationId = await addTarget('HTML viewer');
 		await sql('UPDATE email SET content=?,text=? WHERE email_id=10', '<p id="mail-body">HTML mail content</p>', 'Plain fallback');
 		const token = await jwtUtils.generateToken(c, { purpose: 'mail-view', emailId: 10, accountId: a.accountId, userId: 1, destinationId }, 900);
-		const response = await worker.fetch(new Request(`https://mail.example.com/api/telegram/getEmail/${token}`), env, {});
+		const response = await worker.fetch(new Request(`https://mail.example.com/api/telegram/getEmail/${token}`), {...env, telegram_view_renderer: 'responsive'}, {});
 		const { document } = parseHTML(await response.text());
 		expect(document.body.querySelector('#mail-body')?.textContent).toBe('HTML mail content');
 		expect(document.querySelector('script')).toBeNull();
 		expect(response.headers.get('Content-Security-Policy')).toBe("sandbox; default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'");
 		expect(response.headers.get('Cache-Control')).toBe('no-store');
 		expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
+	});
+	it.each([undefined, 'upstream'])('uses upstream Shadow DOM and authorizes only its exact script hash (mode=%s)', async (mode) => {
+		const destinationId = await addTarget('Upstream HTML viewer');
+		await sql('UPDATE email SET content=? WHERE email_id=10', '<p id="mail-body">Original upstream layout</p><script>window.mailInjected=true</script><img src="{{domain}}attachments/logo.png" onerror="window.mailInjected=true">');
+		const token = await jwtUtils.generateToken(c, {purpose: 'mail-view', emailId: 10, accountId: a.accountId, userId: 1, destinationId}, 900);
+		const url = `https://mail.example.com/api/telegram/getEmail/${token}`;
+		const viewEnv = mode ? {...env, telegram_view_renderer: mode} : env;
+		const response = await worker.fetch(new Request(url), viewEnv, {});
+		const {document} = parseHTML(await response.text());
+		expect(document.querySelector('#container')).not.toBeNull();
+		const scripts = [...document.querySelectorAll('script')];
+		expect(scripts).toHaveLength(1);
+		const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(scripts[0].textContent));
+		const hash = btoa(String.fromCharCode(...new Uint8Array(digest)));
+		const policy = response.headers.get('Content-Security-Policy');
+		expect(policy).toContain(`script-src 'sha256-${hash}'`);
+		expect(policy).toContain('sandbox allow-scripts;');
+		expect(policy).not.toMatch(/allow-same-origin|unsafe-eval|unsafe-hashes|strict-dynamic/);
+		expect(policy.split('script-src ')[1].split(';')[0]).not.toContain('unsafe-inline');
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+		expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
+		const embedded = JSON.parse(scripts[0].textContent.match(/const exampleHtml = (.*);/)[1]);
+		const mail = parseHTML(embedded).document;
+		expect(mail.querySelector('script')).toBeNull();
+		expect(mail.querySelector('img').getAttribute('src')).toBe('/attachments/logo.png');
+		await upgrade();
+		const rejected = await worker.fetch(new Request(url), viewEnv, {});
+		expect(await rejected.text()).toContain('Access denied');
+		expect(rejected.headers.get('Content-Security-Policy')).not.toContain('allow-scripts');
+	});
+	it('uses upstream plain-text layout without interpreting markup or allowing scripts', async () => {
+		const destinationId = await addTarget('Upstream text viewer');
+		const text = '<img src=x onerror=alert(1)>\n<script>Literal text</script> & safe';
+		await sql('UPDATE email SET content=NULL,text=? WHERE email_id=10', text);
+		const token = await jwtUtils.generateToken(c, {purpose: 'mail-view', emailId: 10, accountId: a.accountId, userId: 1, destinationId}, 900);
+		const response = await worker.fetch(new Request(`https://mail.example.com/api/telegram/getEmail/${token}`), env, {});
+		const {document} = parseHTML(await response.text());
+		expect(document.body.querySelector('span').textContent).toBe(text);
+		expect(document.querySelector('img,script')).toBeNull();
+		expect(document.documentElement.hasAttribute('data-mail-view')).toBe(false);
+		expect(response.headers.get('Content-Security-Policy')).not.toContain('allow-scripts');
 	});
 	it('tests distinguish Bot validity, Chat validity and sending; saving never sends', async () => {
 		const network = await mockNetwork();

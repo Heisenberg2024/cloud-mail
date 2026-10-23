@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import jwtUtils from '../utils/jwt-utils';
 import emailMsgTemplate from '../template/email-msg';
 import emailTextTemplate from '../template/email-text';
-import emailHtmlTemplate from '../template/email-html';
+import renderTelegramView, { STATIC_VIEW_CSP } from '../template/telegram-view';
 import { validateDestination } from './push-validation';
 
 function requestFailure(method, error) {
@@ -53,6 +53,7 @@ async function telegramRequest(config, method, body = {}) {
 
 const telegramService = {
 	async getEmailContent(c, params) {
+		c.set('telegramViewPolicy', STATIC_VIEW_CSP);
 		const payload = await jwtUtils.verifyToken(c, params.token);
 		if (!payload || payload.purpose !== 'mail-view' || !payload.exp || payload.exp <= Math.floor(Date.now() / 1000))
 			return emailTextTemplate('Access denied');
@@ -79,11 +80,10 @@ const telegramService = {
 				.first();
 			if (!owner) return emailTextTemplate('Access denied');
 		} else if (payload.userId !== 0 || emailRow.status !== 7) return emailTextTemplate('Access denied');
-		if (emailRow.content) {
-			const { r2Domain } = await settingService.query(c);
-			return emailHtmlTemplate(emailRow.content, r2Domain);
-		}
-		return emailTextTemplate(emailRow.text || '');
+		const { r2Domain } = emailRow.content ? await settingService.query(c) : {};
+		const view = await renderTelegramView(emailRow, r2Domain, c.env.telegram_view_renderer);
+		c.set('telegramViewPolicy', view.csp);
+		return view.html;
 	},
 	async sendEmailToBot(c, emailRow, destination) {
 		const config = destination.config;
