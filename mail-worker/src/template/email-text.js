@@ -1,30 +1,18 @@
+import emailViewStyle from './email-view-style';
+
 export default function emailTextTemplate(text) {
 	const escapedText = String(text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 	return `<!DOCTYPE html>
-<html lang='en' >
+<html lang='en' data-mail-view>
 <head>
     <meta charset='UTF-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0, viewport-fit=cover'>
     <style>
-        html {
-            margin: 0;
-            padding: 0;
-            background: #FFF;
-        }
-
-        body {
-        		box-sizing: border-box;
-        		margin: 0;
-        		padding: 10px 10px;
-            width: 100%;
-            height: 100%;
-            overflow: auto; /* 改为 auto 允许滚动 */
-        }
-
+        ${emailViewStyle}
         span {
-        		font-family: inherit;
-						white-space: pre-wrap;
-						word-break: break-word;
+            display: block;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
         }
 
     </style>

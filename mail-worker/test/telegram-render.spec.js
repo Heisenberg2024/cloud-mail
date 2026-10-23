@@ -42,4 +42,17 @@ describe('Telegram mail rendering with scripts disabled', () => {
 		expect(document.body.querySelector('span')?.textContent).toBe(text);
 		expect(document.body.querySelector('div,script')).toBeNull();
 	});
+	it('contains wide data tables in a local scroll area without losing their cells', () => {
+		const { document } = parseHTML(emailHtmlTemplate('<table id="data-table" style="min-width:680px"><tr><th>Item</th><th>Quantity</th><th>Amount</th></tr><tr><td>Original item</td><td>12</td><td>100</td></tr></table>', ''));
+		const table = document.querySelector('#data-table');
+		expect(table.parentElement.hasAttribute('data-mail-table-scroll')).toBe(true);
+		expect(table.hasAttribute('data-mail-data-table')).toBe(true);
+		expect(table.querySelectorAll('th,td')).toHaveLength(6);
+		expect(table.textContent).toContain('Original item');
+	});
+	it('keeps presentation tables fluid when a nested data table needs its own scrolling', () => {
+		const { document } = parseHTML(emailHtmlTemplate('<table role="presentation" id="layout" width="680"><tr><td><table id="data"><tr><th>Item</th><th>Quantity</th><th>Amount</th></tr></table></td></tr></table>', ''));
+		expect(document.querySelector('#layout').hasAttribute('data-mail-data-table')).toBe(false);
+		expect(document.querySelector('#data').parentElement.hasAttribute('data-mail-table-scroll')).toBe(true);
+	});
 });
