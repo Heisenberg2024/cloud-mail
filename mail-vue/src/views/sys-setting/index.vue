@@ -240,20 +240,6 @@
           <div class="settings-card">
             <div class="card-title">{{ $t('oss') }}</div>
             <div class="card-content">
-              <div class="r2domain-item">
-                <div>
-                  <span>{{ $t('osDomain') }}</span>
-                  <el-tooltip effect="dark" :content="$t('ossDomainDesc')">
-                    <Icon class="warning" icon="fe:warning" width="18" height="18"/>
-                  </el-tooltip>
-                </div>
-                <div class="r2domain">
-                  <span>{{ setting.r2Domain || '' }}</span>
-                  <el-button class="opt-button" size="small" type="primary" @click="r2DomainShow = true">
-                    <Icon icon="lsicon:edit-outline" width="16" height="16"/>
-                  </el-button>
-                </div>
-              </div>
               <div class="setting-item">
                 <div>
                   <span>{{ $t('s3Configuration') }}</span>
@@ -320,7 +306,7 @@
                 </div>
               </div>
               <div class="setting-item">
-                <div><span>Site Key</span></div>
+                <div><span>Site key</span></div>
                 <div class="bot-verify">
                   <span>{{ setting.siteKey }}</span>
                   <el-button class="opt-button" size="small" type="primary" @click="turnstileShow = true">
@@ -329,7 +315,7 @@
                 </div>
               </div>
               <div class="setting-item">
-                <div><span>Secret Key</span></div>
+                <div><span>Secret key</span></div>
                 <div class="bot-verify">
                   <span> {{ setting.secretKey }} </span>
                   <el-button class="opt-button" size="small" type="primary" @click="turnstileShow = true">
@@ -479,18 +465,11 @@
           <el-button type="primary" :loading="settingLoading" @click="saveResendToken">{{ $t('save') }}</el-button>
         </form>
       </el-dialog>
-      <el-dialog v-model="r2DomainShow" :title="$t('addOsDomain')" width="340"
-                 @closed="r2DomainInput = setting.r2Domain">
-        <form @submit.prevent>
-          <el-input type="text" :placeholder="$t('domainDesc')" v-model="r2DomainInput" @keyup.enter="saveR2domain"/>
-          <el-button type="primary" :loading="settingLoading" @click="saveR2domain">{{ $t('save') }}</el-button>
-        </form>
-      </el-dialog>
       <el-dialog v-model="turnstileShow" :title="$t('addTurnstileSecret')" width="340"
                  @closed="turnstileForm.secretKey = '';turnstileForm.siteKey = ''">
         <form @submit.prevent>
-          <el-input type="text" placeholder="Site Key" v-model="turnstileForm.siteKey" @keyup.enter="saveTurnstileKey"/>
-          <el-input type="text" style="margin-top: 15px" placeholder="Secret Key" v-model="turnstileForm.secretKey" @keyup.enter="saveTurnstileKey"/>
+          <el-input type="text" placeholder="Site key" v-model="turnstileForm.siteKey" @keyup.enter="saveTurnstileKey"/>
+          <el-input type="text" style="margin-top: 15px" placeholder="Secret key" v-model="turnstileForm.secretKey" @keyup.enter="saveTurnstileKey"/>
           <el-button type="primary" :loading="settingLoading" @click="saveTurnstileKey">{{ $t('save') }}</el-button>
         </form>
       </el-dialog>
@@ -645,9 +624,9 @@
           <el-input class="dialog-input" type="text" placeholder="Bucket" v-model="s3.bucket" @keyup.enter="saveS3"/>
           <el-input class="dialog-input" type="text" placeholder="Endpoint" v-model="s3.endpoint" @keyup.enter="saveS3"/>
           <el-input class="dialog-input" type="text" placeholder="Region" v-model="s3.region" @keyup.enter="saveS3"/>
-          <el-input class="dialog-input" type="text" :placeholder="setting.s3AccessKey || 'Access Key'"
+          <el-input class="dialog-input" type="text" :placeholder="setting.s3AccessKey || 'Access key'"
                     v-model="s3.s3AccessKey" @keyup.enter="saveS3"/>
-          <el-input style="margin-bottom: 10px" type="text" :placeholder="setting.s3SecretKey || 'Secret Key'" v-model="s3.s3SecretKey" @keyup.enter="saveS3"/>
+          <el-input style="margin-bottom: 10px" type="text" :placeholder="setting.s3SecretKey || 'Secret key'" v-model="s3.s3SecretKey" @keyup.enter="saveS3"/>
           <div class="force-path-style">
             <div class="force-path-style-left">
               <span>ForcePathStyle</span>
@@ -760,7 +739,7 @@ defineOptions({
   name: 'sys-setting'
 })
 
-const currentVersion = 'v3.3.0'
+const currentVersion = 'v3.4.0'
 const hasUpdate = ref(false)
 let getUpdateErrorCount = 1;
 const {t, locale} = useI18n();
@@ -775,7 +754,6 @@ const resendTokenFormShow = ref(false)
 const blackFormShow = ref(false)
 const autoCleanShow = ref(false)
 const aiCodeFilterShow = ref(false)
-const r2DomainShow = ref(false)
 const turnstileShow = ref(false)
 const noticePopupShow = ref(false)
 const emailPrefixShow = ref(false)
@@ -786,7 +764,6 @@ const {settings: setting} = storeToRefs(settingStore);
 const editTitle = ref('')
 const settingLoading = ref(false)
 const clearS3Loading = ref(false)
-const r2DomainInput = ref('')
 const loginOpacity = ref(0)
 const minEmailPrefix = ref(0)
 const emailPrefixFilter = ref([])
@@ -882,7 +859,6 @@ function getSettings() {
     firstLoading.value = false
     backgroundUrl.value = setting.value.background?.startsWith('http') ? setting.value.background : ''
     editTitle.value = setting.value.title
-    r2DomainInput.value = setting.value.r2Domain
     addVerifyCount.value = setting.value.addVerifyCount
     regVerifyCount.value = setting.value.regVerifyCount
     resetNoticeForm()
@@ -1280,11 +1256,6 @@ function openCut() {
   }
 }
 
-function saveR2domain() {
-  const settingForm = {r2Domain: r2DomainInput.value}
-  editSetting(settingForm)
-}
-
 function openResendForm() {
   resendTokenFormShow.value = true
 }
@@ -1371,7 +1342,6 @@ function editSetting(settingForm, refreshStatus = true) {
       getSettings()
     }
     editTitleShow.value = false
-    r2DomainShow.value = false
     resendTokenFormShow.value = false
     turnstileShow.value = false
     addVerifyCountShow.value = false
@@ -1523,21 +1493,6 @@ function editSetting(settingForm, refreshStatus = true) {
   min-width: 22px;
   flex-shrink: 0;
   margin-right: 2px;
-}
-
-.r2domain-item {
-  display: flex;
-  gap: 10px;
-  > div:first-child {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  > div:last-child {
-    flex: 1;
-    text-align: right;
-  }
 }
 
 .title-icon.warning {

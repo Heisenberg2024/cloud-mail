@@ -11,6 +11,20 @@
 
 ## 数据模型与升级方式
 
+### 上游 v3.4.0 集成
+
+本地集成上游 `c0009dd`，保留独立邮箱、管理员集中只读查看、多目标推送、投递记录分页/重投及 Telegram 无脚本预览。本次集成不执行推送、部署或线上数据库操作。
+
+- `email.sender_email` 保存 SMTP Envelope Sender，`send_email` 继续保存邮件 Header From。新增字段默认空字符串，不改写历史邮件身份或附件对象 Key。
+- 新增独立的 `upstream-v3.4` 迁移标记，避免已完成 fork 的 `v3.4-schema`/`v3.4` 升级时漏加字段。首次 API、收信、定时清理及显式初始化共用幂等准备；字段和该标记通过本地 D1 batch 回归验证原子完成、并发和失败回滚/重试。
+- 上游分开发信共用保存函数，发件入口仍核对邮箱所有者，写入发件记录及附件时仍读取当前归属；发送中转移邮箱不会把历史写回旧用户。
+- 新详情地址为 `/{inbox|starred|sent|all-mail}/messages`；管理员详情继续保留 `accountId` 与只读限制。搜索和 HTML 清理均与现有请求版本隔离并存，最终正文组件额外清理管理员直接详情与持久缓存中的 HTML。
+- 沿用上游同源 KV/R2/S3 存储代理。设置刷新后运行配置不再使用独立对象存储域名，D1 原字段仍保留；历史 Key 不移动，回复图片兼容 `attachments/`、`/attachments/`、`/oss/attachments/` 及仍配置的旧存储域名前缀。
+- TinyMCE 的 document_base_url 固定为站点根，并关闭 relative_urls；新嵌套详情页刷新或编辑器重建后，图片仍使用根路径，不生成 `../attachments/`。前端回归运行仓库实际 TinyMCE URL 转换代码，而非只检查配置文本。
+- 新增上游运行时依赖 DOMPurify；jsdom 仅用于前端真实 DOM 安全回归，不进入生产 Worker。
+
+GitHub 部署工作流仍按原配置监听 `main` 的前后端代码更新。本地集成分支与测试不会触发该流程；未来更新远端 `main` 前必须单独确认发布授权和备份/副本验收。
+
 ### 已升级系统的集中邮箱管理修复
 
 这次集中查看修复只更新前端与 Worker 代码，不新增表或迁移，不需要重新执行邮箱升级或独立登录迁移。保持已有 account_id、user_id、历史邮件/附件及转发规则关联，禁止把独立邮箱重新绑定到管理员。
@@ -30,7 +44,8 @@
 | 变更 | 用途 |
 | --- | --- |
 | user.session_version | 实时失效旧会话；旧 Token 缺少字段按版本 0 兼容 |
-| app_migration | v3.4-schema 与 v3.4 完成标记 |
+| app_migration | v3.4-schema、v3.4 与 upstream-v3.4 独立完成标记 |
+| email.sender_email | 上游 Envelope Sender 字段，旧记录默认空字符串 |
 | mailbox_login_upgrade | account_id 唯一约束、原用户及升级事务凭据 |
 | push_destination | 独立目标类型、状态及严格校验 JSON 配置 |
 | push_rule | 状态、收件人模式、优先级 |
@@ -76,7 +91,7 @@ pnpm exec wrangler d1 time-travel info YOUR_DATABASE
 
 1. 运行自动测试及两端构建。
 2. 保留现有 db/kv/r2/assets/domain/admin/jwt_secret 等生产绑定与 Secret，按原流程部署新 Worker/前端。
-3. 立即执行原初始化入口并确认 success；检查 app_migration 的 v3.4-schema 和 v3.4 两个标记。首次使用自动升级与此步骤共用事务，重复执行安全。
+3. 立即执行原初始化入口并确认 success；检查 app_migration 的 v3.4-schema、v3.4 和 upstream-v3.4 三个标记及 email.sender_email。首次使用自动升级与此步骤共用事务，重复执行安全。
 4. 用模拟匹配核对 A/B/C 对应的最终目标；确认 legacy_all 等兼容模式符合原范围。
 5. 在管理员主动授权后，才点击 Telegram / Webhook 的真实连接测试。保存配置、复制规则和模拟不会发送通知。
 6. 选一个子邮箱开通独立登录，记录其 account_id 及邮件数量；升级后确认 ID、收发件、附件 Key、收藏一致；新账号只能访问自己的邮箱。修改密码/角色、停用后旧 Token 都应失效。

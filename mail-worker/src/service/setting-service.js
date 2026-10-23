@@ -16,6 +16,7 @@ const settingService = {
 	async refresh(c) {
 		const settingRow = await orm(c).select().from(setting).get();
 		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
+		settingRow.r2Domain = '';
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
 		c.set('setting', null);
 		c.set('settingRaw', settingRow);

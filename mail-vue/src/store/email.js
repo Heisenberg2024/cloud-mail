@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { EmailUnreadEnum } from '@/enums/email-enum.js'
+import { sanitizeEmailHtml } from '@/utils/email-html.js'
 
 export const useEmailStore = defineStore('email', {
     state: () => ({
@@ -18,11 +19,23 @@ export const useEmailStore = defineStore('email', {
         sendScroll: null,
         detailMap: {},
         detailVersion: 0,
+        searchParams: {
+            text: '',
+            type: 'subject',
+            startDate: '',
+            endDate: '',
+        },
     }),
     persist: {
         pick: ['contentData'],
     },
     actions: {
+        setSearchParams(params) {
+            this.searchParams = {
+                ...this.searchParams,
+                ...params,
+            }
+        },
         fetchList(request) {
             const version = this.detailVersion;
             return request(0).then(data => {
@@ -47,6 +60,7 @@ export const useEmailStore = defineStore('email', {
             const currentId = this.contentData.email?.emailId
             for (const item of list) {
                 if (!item?.emailId) continue
+                if (item.content) item.content = sanitizeEmailHtml(item.content)
                 if (!item.attList) item.attList = []
                 // 完整列表可能早于「标已读」返回，避免把本地已读状态盖回未读
                 const prev = this.detailMap[item.emailId]

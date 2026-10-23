@@ -50,6 +50,7 @@ const attService = {
 	async toImageUrlHtml(c, content) {
 
 		const { r2Domain } = await settingService.query(c);
+		const storageDomain = domainUtils.toOssDomain(r2Domain);
 
 		const { document } = parseHTML(content);
 
@@ -82,20 +83,19 @@ const attService = {
 			}
 
 			//邮件正文站内图片转cid附件
-			if (src && (src.startsWith(domainUtils.toOssDomain(r2Domain)) || src.startsWith('attachments/'))) {
+			let attachmentKey;
+			if (storageDomain && src?.startsWith(storageDomain + '/')) attachmentKey = src.slice(storageDomain.length + 1);
+			else if (src?.startsWith('/attachments/')) attachmentKey = src.slice(1);
+			else if (src?.startsWith('/oss/attachments/')) attachmentKey = src.slice(5);
+			else if (src?.startsWith('attachments/')) attachmentKey = src;
+			if (attachmentKey) {
 
 				const cid = uuidv4().replace(/-/g, '')
 				img.setAttribute('src', 'cid:' + cid);
 
 				const attData = {};
 
-				if (src.startsWith(domainUtils.toOssDomain(r2Domain))) {
-					attData.key = src.replace(domainUtils.toOssDomain(r2Domain) + '/','');
-				}
-
-				if (src.startsWith('attachments/')) {
-					attData.key = src;
-				}
+				attData.key = attachmentKey;
 
 				attData.contentId = cid;
 				attData.type = attConst.type.EMBED;

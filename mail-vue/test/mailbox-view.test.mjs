@@ -2,9 +2,14 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {setImmediate as tick} from 'node:timers/promises';
-import {computed, effectScope, reactive, ref, watch} from 'vue';
+import {computed, effectScope, reactive, ref, shallowRef, watch} from 'vue';
 import {parse} from 'vue/compiler-sfc';
 import {createPinia, defineStore, setActivePinia} from 'pinia';
+import {JSDOM} from 'jsdom';
+
+const dom = new JSDOM('<!doctype html><html><body></body></html>');
+globalThis.window = dom.window;
+const {sanitizeEmailHtml} = await import('../src/utils/email-html.js');
 
 const deferred = () => {
   let resolve;
@@ -17,7 +22,7 @@ function setup(path, bindings, returned) {
   const code = parse(source(path)).descriptor.scriptSetup.content;
   const scope = effectScope();
   const defaults = {
-    computed, reactive, ref, watch, nextTick: tick,
+    computed, reactive, ref, shallowRef, watch, nextTick: tick, sanitizeEmailHtml,
     onMounted() {}, onActivated() {}, onUnmounted() {}, defineOptions() {},
     defineExpose() {}, defineEmits: () => () => {},
     useI18n: () => ({t: key => key}),
@@ -35,8 +40,70 @@ function setup(path, bindings, returned) {
 function emailStore() {
   setActivePinia(createPinia());
   const code = withoutImports(source('../src/store/email.js')).replace('export const useEmailStore =', 'return');
-  return new Function('defineStore', 'EmailUnreadEnum', code)(defineStore, {UNREAD: 0, READ: 1})();
+  return new Function('defineStore', 'EmailUnreadEnum', 'sanitizeEmailHtml', code)(defineStore, {UNREAD: 0, READ: 1}, sanitizeEmailHtml)();
 }
+
+test('raw administrator and restored mail HTML is sanitized at the shared rendering boundary', () => {
+  let mount;
+  const props = reactive({html: '<html><body style="color:red"><p>Visible administrator mail</p><script>alert(1)</script><img src="x" onerror="alert(1)"><a href="javascript:alert(1)">open</a></body></html>'});
+  const view = setup('../src/components/shadow-html/index.vue', {
+    defineProps: () => props, onMounted: callback => {mount = callback;},
+  }, 'container, contentBox, updateContent');
+  view.container.value = dom.window.document.createElement('div');
+  view.contentBox.value = dom.window.document.createElement('div');
+  mount();
+  const shadow = view.container.value.shadowRoot;
+  assert.equal(shadow.querySelector('.shadow-content p').textContent, 'Visible administrator mail');
+  assert.equal(shadow.querySelector('script'), null);
+  assert.equal(shadow.querySelector('img').hasAttribute('onerror'), false);
+  assert.equal(shadow.querySelector('a').hasAttribute('href'), false);
+  props.html = '<body style="color:red;--payload:</style><img src=x onerror=bad()>"><p>Safe styled mail</p></body>';
+  view.updateContent();
+  assert.equal(shadow.querySelector('[onerror]'), null);
+  assert.equal(shadow.querySelector('p').textContent, 'Safe styled mail');
+  props.html = '<p>Next mailbox</p><svg onload="alert(1)"></svg>';
+  view.updateContent();
+  assert.equal(shadow.querySelector('p').textContent, 'Next mailbox');
+  assert.equal(shadow.querySelector('[onload]'), null);
+  view.stop();
+});
+
+test('full-list details use the real sanitizer while preserving safe body and attachment markup', () => {
+  const store = emailStore();
+  store.applyFullList([{emailId: 5, content: '<p>Safe <b>body</b></p><img src="/attachments/key" onerror="bad()"><script>bad()</script>'}]);
+  const document = new JSDOM(store.detailMap[5].content).window.document;
+  assert.equal(document.querySelector('b').textContent, 'body');
+  assert.equal(document.querySelector('img').getAttribute('src'), '/attachments/key');
+  assert.equal(document.querySelector('img').hasAttribute('onerror'), false);
+  assert.equal(document.querySelector('script'), null);
+});
+
+test('the real TinyMCE preserves proxy image paths after refreshing any nested mailbox detail route', () => {
+  for (const mailbox of ['inbox', 'sent', 'all-mail']) {
+    const editorDom = new JSDOM('<html><body><textarea id="probe"></textarea></body></html>', {
+      url: `https://mail.example.com/${mailbox}/messages`, runScripts: 'outside-only',
+    });
+    editorDom.window.matchMedia = () => ({matches: false, addEventListener() {}, removeEventListener() {}});
+    editorDom.window.eval(source('../public/tinymce/tinymce.min.js'));
+    const tiny = editorDom.window.tinymce;
+    let options;
+    tiny.init = config => {options = config;};
+    const view = setup('../src/components/tiny-editor/index.vue', {
+      defineProps: () => ({editorId: 'probe', defValue: ''}),
+      useI18n: () => ({locale: ref('zh')}), onBeforeUnmount() {},
+      useUiStore: () => ({dark: false}), useSettingStore: () => ({lang: 'zh'}),
+      window: editorDom.window,
+    }, 'initEditor');
+    view.initEditor();
+    const editor = new tiny.Editor('probe', options, tiny.EditorManager);
+    assert.equal(editor.convertURL('/attachments/original-receive', 'src', 'img'), '/attachments/original-receive');
+    assert.equal(editor.convertURL('attachments/original-receive', 'src', 'img'), '/attachments/original-receive');
+    assert.equal(editor.convertURL('/oss/attachments/original-receive', 'src', 'img'), '/oss/attachments/original-receive');
+    assert.equal(editor.convertURL('https://outside.org/image', 'src', 'img'), 'https://outside.org/image');
+    view.stop();
+    editorDom.window.close();
+  }
+});
 
 test('mailbox refresh starts during an old page request and discards its late list, cursor and count', async () => {
   const requests = [];
@@ -95,7 +162,10 @@ test('administrator mailbox switches isolate pending bodies/attachments and reta
   const accountStore = reactive({currentAccountId: 1, currentAccount: {accountId: 1, userId: 1}, managedAccount: {}, ownershipVersion: 0});
   const requests = [], lists = [];
   const view = setup('../src/views/all-email/index.vue', {
-    useRoute: () => route, router: {push: async next => {state.value = next;}},
+    useRoute: () => route, router: {push: async next => {
+      assert.deepEqual(next.params, {mailbox: 'all-mail'});
+      state.value = next;
+    }},
     useEmailStore: () => store, useAccountStore: () => accountStore,
     useUserStore: () => ({user: {type: 0}}), useUiStore: () => reactive({}),
     useSettingStore: () => ({settings: {autoRefresh: 0}}),

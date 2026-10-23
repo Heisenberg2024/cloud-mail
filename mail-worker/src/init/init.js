@@ -1,4 +1,4 @@
-import { upgradeV34 } from './upgrade-v34';
+import { upgradeV34, ensureUpstreamV34Schema } from './upgrade-v34';
 import settingService from '../service/setting-service';
 import emailUtils from '../utils/email-utils';
 import {emailConst} from "../const/entity-const";
@@ -33,9 +33,14 @@ const dbInit = {
 		await this.v3_1DB(c);
 		await this.v3_2DB(c);
 		await this.v3_3DB(c);
+		await this.v3_4DB(c);
 		await upgradeV34(c);
 		await settingService.refresh(c);
 		return c.text('success');
+	},
+
+	async v3_4DB(c) {
+		await ensureUpstreamV34Schema(c);
 	},
 
 	async v3_3DB(c) {

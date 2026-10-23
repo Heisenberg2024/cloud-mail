@@ -2,7 +2,7 @@ import { env, fetchMock } from 'cloudflare:test';
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../src';
 import { dbInit } from '../src/init/init';
-import { upgradeV34 } from '../src/init/upgrade-v34';
+import { upgradeV34, ensureV34Schema } from '../src/init/upgrade-v34';
 import cryptoUtils from '../src/utils/crypto-utils';
 import jwtUtils from '../src/utils/jwt-utils';
 import mailboxLoginService from '../src/service/mailbox-login-service';
@@ -17,6 +17,9 @@ import attService from '../src/service/att-service';
 import r2Service from '../src/service/r2-service';
 import settingService from '../src/service/setting-service';
 import starService from '../src/service/star-service';
+import resendService from '../src/service/resend-service';
+import regKeyService from '../src/service/reg-key-service';
+import s3Service from '../src/service/s3-service';
 import KvConst from '../src/const/kv-const';
 import { email as receiveEvent } from '../src/email/email';
 import { normalizeEmail, validateDestination, validateWebhookUrl, isPublicIp } from '../src/service/push-validation';
@@ -109,6 +112,127 @@ beforeEach(async () => {
 	await sql('INSERT INTO star(user_id,email_id) VALUES (1,10),(1,12)');
 });
 afterEach(() => vi.restoreAllMocks());
+
+describe('Upstream v3.4 integration', () => {
+	beforeEach(() => { fetchMock.activate(); fetchMock.disableNetConnect(); });
+	afterEach(() => { fetchMock.assertNoPendingInterceptors(); fetchMock.deactivate(); });
+	const sendForm = (recipients, extras = {}) => ({
+		accountId: a.accountId, sendType: 'new', receiveEmail: recipients,
+		subject: 'Integration message', text: 'Safe body', content: '<p>Safe body</p>', ...extras,
+	});
+	async function enableSending() {
+		await sql('UPDATE setting SET send=0');
+		await settingService.refresh(c);
+	}
+	it('retains the envelope sender separately from the header sender on real receive events', async () => {
+		const msg = message(a.email, 'header@outside.org');
+		msg.from = 'bounce@outside.org';
+		await receiveEvent(msg, env, {});
+		expect(msg.setReject).not.toHaveBeenCalled();
+		const row = await first('SELECT * FROM email ORDER BY email_id DESC LIMIT 1');
+		expect(row.sender_email).toBe('bounce@outside.org');
+		expect(row.send_email).toBe('header@outside.org');
+		expect(row.account_id).toBe(a.accountId);
+	});
+	it('keeps advanced search results, counts and cursors within the independent owner and date range', async () => {
+		const owner = await upgrade();
+		await sql("UPDATE email SET subject='Needle',create_time='2026-10-20 10:00:00'");
+		const params = {accountId: a.accountId, allReceive: 1, size: 10, type: 0, full: 1,
+			text: 'nEeDLe', searchType: 'subject', startDate: '2026-10-20 00:00:00', endDate: '2026-10-20 23:59:59'};
+		const result = await emailService.list(c, params, owner.userId);
+		expect(result.list.map(row => row.emailId)).toEqual([10]);
+		expect(result.total).toBe(1);
+		expect(result.latestEmail.emailId).toBe(10);
+		expect((await emailService.list(c, {...params, endDate: '2026-10-19 23:59:59'}, owner.userId)).total).toBe(0);
+		await expect(emailService.list(c, params, 1)).rejects.toThrow();
+	});
+	it('separately delivers internal messages to independent and attached mailboxes with their actual owners', async () => {
+		await enableSending();
+		const owner = await mailboxLoginService.enable(c, {accountId: b.accountId, roleId: 1, password, confirmPassword: password, enabled: true});
+		const result = await emailService.send(c, sendForm([b.email, d.email], {manyType: 'divide'}), 1);
+		expect(result.failedRecipients).toEqual([]);
+		expect(result.emails).toHaveLength(2);
+		expect(result.emails.map(row => JSON.parse(row.recipient).map(item => item.address))).toEqual([[b.email], [d.email]]);
+		const received = (await sql("SELECT account_id,user_id FROM email WHERE subject='Integration message' AND type=0 ORDER BY email_id")).results;
+		expect(received).toEqual([{account_id: b.accountId, user_id: owner.userId}, {account_id: d.accountId, user_id: 1}]);
+	});
+	it('keeps successful separate Cloudflare deliveries and returns only unfinished recipients after a failure', async () => {
+		await enableSending();
+		let calls = 0;
+		c.env = {...env, email: {send: async () => {
+			if (++calls > 1) throw new Error('Provider unavailable');
+			return {messageId: 'cf-first'};
+		}}};
+		const result = await emailService.send(c, sendForm(['one@outside.org', 'two@outside.org', 'three@outside.org'], {manyType: 'divide'}), 1);
+		expect(result.emails).toHaveLength(1);
+		expect(result.emails[0].resendEmailId).toBe('cf-first');
+		expect(result.failedRecipients).toEqual(['two@outside.org', 'three@outside.org']);
+		expect(result.error).toBe('Provider unavailable');
+		expect((await first("SELECT count(*) AS n FROM email WHERE subject='Integration message' AND type=1")).n).toBe(1);
+	});
+	it('saves real Resend batch results as separate sent records without leaking recipients', async () => {
+		await enableSending();
+		await settingService.set(c, {resendTokens: {'example.com': 'local-resend-placeholder'}});
+		fetchMock.get('https://api.resend.com').intercept({path: '/emails/batch', method: 'POST', body: body => {
+			const requests = JSON.parse(body);
+			return requests.length === 2 && requests[0].to.join() === 'one@outside.org' && requests[1].to.join() === 'two@outside.org';
+		}}).reply(200, {data: [{id: 'resend-one'}, {id: 'resend-two'}]});
+		const result = await emailService.send(c, sendForm(['one@outside.org', 'two@outside.org'], {manyType: 'divide'}), 1);
+		expect(result.failedRecipients).toEqual([]);
+		expect(result.emails.map(row => row.resendEmailId)).toEqual(['resend-one', 'resend-two']);
+		expect((await first("SELECT count(*) AS n FROM email WHERE subject='Integration message' AND type=1")).n).toBe(2);
+	});
+	it('serves existing KV object keys and missing keys through the unified storage paths', async () => {
+		await r2Service.putObj(c, 'attachments/old-key', 'Original attachment', {contentType: 'text/plain'});
+		for (const path of ['/attachments/old-key', '/oss/attachments/old-key']) {
+			const response = await worker.fetch(new Request('https://local.example.com' + path), env, {});
+			expect(response.status).toBe(200);
+			expect(response.headers.get('content-type')).toBe('text/plain');
+			expect(await response.text()).toBe('Original attachment');
+		}
+		expect((await worker.fetch(new Request('https://local.example.com/attachments/missing'), env, {})).status).toBe(404);
+	});
+	it('serves R2 bodies through the same proxy without changing object keys or metadata', async () => {
+		const localEnv = {...env, r2: {get: async key => key === 'attachments/old-key'
+			? {body: 'R2 attachment', httpMetadata: {contentType: 'text/plain', contentDisposition: 'attachment;filename=sample.txt'}} : null}};
+		const response = await worker.fetch(new Request('https://local.example.com/attachments/old-key'), localEnv, {});
+		expect(await response.text()).toBe('R2 attachment');
+		expect(response.headers.get('content-disposition')).toBe('attachment;filename=sample.txt');
+		expect((await worker.fetch(new Request('https://local.example.com/attachments/missing'), localEnv, {})).status).toBe(404);
+	});
+	it('selects configured S3 storage and forwards the original proxy key to its transport', async () => {
+		await settingService.set(c, {bucket: 'local-test-bucket', endpoint: 'https://storage.example.net', s3AccessKey: 'local-test-key', s3SecretKey: 'local-test-secret'});
+		vi.spyOn(s3Service, 'getObj').mockImplementation(async (_context, key) => {
+			if (key !== 'attachments/old-key') throw new Error('Incorrect object key');
+			return new Response('S3 attachment', {headers: {'Content-Type': 'text/plain'}});
+		});
+		const response = await worker.fetch(new Request('https://local.example.com/oss/attachments/old-key'), env, {});
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe('S3 attachment');
+	});
+	it('acknowledges unknown Resend events while still applying known status updates', async () => {
+		await expect(resendService.webhooks(c, {type: 'email.delivered', data: {email_id: 'unknown-id'}})).resolves.toBeUndefined();
+		await sql("UPDATE email SET resend_email_id='known-id',status=1 WHERE email_id=11");
+		await resendService.webhooks(c, {type: 'email.delivered', data: {email_id: 'known-id'}});
+		expect((await first('SELECT status FROM email WHERE email_id=11')).status).toBe(2);
+	});
+	it('consumes the last invitation only once under concurrent requests and restores failed use', async () => {
+		await regKeyService.add(c, {code: 'single-use', roleId: 1, count: 1, expireTime: '2099-01-01 00:00:00'}, 1);
+		const results = await Promise.all([regKeyService.consumeCount(c, 'single-use'), regKeyService.consumeCount(c, 'single-use')]);
+		expect(results.filter(Boolean)).toHaveLength(1);
+		expect((await first("SELECT count FROM reg_key WHERE code='single-use'")).count).toBe(0);
+		await regKeyService.restoreCount(c, 'single-use');
+		expect((await first("SELECT count FROM reg_key WHERE code='single-use'")).count).toBe(1);
+	});
+	it.each(['attachments/original-receive', '/attachments/original-receive', '/oss/attachments/original-receive'])('reuses stored attachment images through %s when replying', async (src) => {
+		await r2Service.putObj(c, 'attachments/original-receive', 'image-data', {contentType: 'image/png'});
+		const result = await attService.toImageUrlHtml(c, `<p>Reply</p><img src="${src}"><img src="https://outside.org/image">`);
+		expect(result.imageDataList).toHaveLength(1);
+		expect(result.imageDataList[0].key).toBe('attachments/original-receive');
+		expect(result.html).toContain('src="cid:');
+		expect(result.html).toContain('src="https://outside.org/image"');
+	});
+});
 
 describe('Telegram in-app mail viewing', () => {
 	let sent;
@@ -898,6 +1022,38 @@ describe('Delivery log pagination and targeted retry', () => {
 });
 
 describe('Migration, security and compatibility', () => {
+	it('upgrades an already migrated fork with sender_email before serving a normal API request', async () => {
+		const token = await loginService.login(c, {email: env.admin, password});
+		await sql("DELETE FROM app_migration WHERE version='upstream-v3.4'");
+		await sql('ALTER TABLE email DROP COLUMN sender_email');
+		const snapshot = (await sql('SELECT email_id,account_id,user_id,subject FROM email ORDER BY email_id')).results;
+		const responses = await Promise.all([1, 2].map(() => worker.fetch(new Request('https://local.example.com/api/setting/query', {headers: {Authorization: token}}), env, {})));
+		for (const response of responses) expect((await response.json()).code).toBe(200);
+		expect((await first('SELECT sender_email FROM email WHERE email_id=10')).sender_email).toBe('');
+		expect((await sql('SELECT email_id,account_id,user_id,subject FROM email ORDER BY email_id')).results).toEqual(snapshot);
+		await ensureV34Schema(c);
+		expect((await first('SELECT count(*) AS n FROM email')).n).toBe(3);
+	});
+	it('combines sender_email and session upgrades from the old schema without changing mailbox identities', async () => {
+		await sql('DELETE FROM app_migration');
+		await sql('ALTER TABLE email DROP COLUMN sender_email');
+		await sql('ALTER TABLE user DROP COLUMN session_version');
+		await upgradeV34(c);
+		expect((await first('SELECT sender_email FROM email WHERE email_id=10')).sender_email).toBe('');
+		expect((await first('SELECT session_version FROM user WHERE user_id=1')).session_version).toBe(0);
+		expect((await first('SELECT account_id FROM email WHERE email_id=10')).account_id).toBe(a.accountId);
+	});
+	it('rolls back the sender column and completion marker together and allows retry', async () => {
+		await sql("DELETE FROM app_migration WHERE version='upstream-v3.4'");
+		await sql('ALTER TABLE email DROP COLUMN sender_email');
+		await sql("CREATE TRIGGER fail_upstream_migration BEFORE INSERT ON app_migration WHEN NEW.version='upstream-v3.4' BEGIN SELECT RAISE(ABORT,'injected'); END");
+		await expect(ensureV34Schema(c)).rejects.toThrow('rolled back');
+		expect((await sql('PRAGMA table_info(email)')).results.some(column => column.name === 'sender_email')).toBe(false);
+		expect(await first("SELECT version FROM app_migration WHERE version='upstream-v3.4'")).toBeNull();
+		await sql('DROP TRIGGER fail_upstream_migration');
+		await ensureV34Schema(c);
+		expect((await first('SELECT sender_email FROM email WHERE email_id=10')).sender_email).toBe('');
+	});
 	async function resetMigration() {
 		await sql("DELETE FROM app_migration WHERE version='v3.4'");
 	}
@@ -941,7 +1097,7 @@ describe('Migration, security and compatibility', () => {
 		await resetMigration();
 		await Promise.all([upgradeV34(c), upgradeV34(c)]);
 		expect((await first('SELECT count(*) AS n FROM push_destination')).n).toBe(0);
-		expect((await first('SELECT count(*) AS n FROM app_migration')).n).toBe(2);
+		expect((await first('SELECT count(*) AS n FROM app_migration')).n).toBe(3);
 	});
 	it('adds session version to an old database without rewriting existing rows', async () => {
 		await resetMigration();

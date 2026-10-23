@@ -6,6 +6,7 @@
 
 <script setup>
 import { ref, onMounted, watch } from 'vue'
+import { sanitizeEmailHtml } from '@/utils/email-html.js'
 
 const props = defineProps({
   html: {
@@ -20,14 +21,16 @@ let shadowRoot = null
 
 function updateContent() {
   if (!shadowRoot) return;
+  // Admin details and persisted content can bypass the user-list cache.
+  const html = sanitizeEmailHtml(props.html || '');
 
   // 1. 提取 <body> 的 style 属性（如果存在）
   const bodyStyleRegex = /<body[^>]*style="([^"]*)"[^>]*>/i;
-  const bodyStyleMatch = props.html.match(bodyStyleRegex);
+  const bodyStyleMatch = html.match(bodyStyleRegex);
   const bodyStyle = bodyStyleMatch ? bodyStyleMatch[1] : '';
 
   // 2. 移除 <body> 标签（保留内容）
-  const cleanedHtml = props.html.replace(/<\/?body[^>]*>/gi, '');
+  const cleanedHtml = html.replace(/<\/?body[^>]*>/gi, '');
 
   // 3. 将 body 的 style 应用到 .shadow-content
   shadowRoot.innerHTML = `

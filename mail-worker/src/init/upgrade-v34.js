@@ -22,9 +22,31 @@ export const schema = [
 	`CREATE INDEX IF NOT EXISTS idx_push_log_email_destination ON push_delivery_log(email_id, destination_id)`,
 ];
 
+// Separate from the fork's existing v3.4 markers: deployed forks may already
+// have completed those migrations before the upstream sender field existed.
+export async function ensureUpstreamV34Schema(c) {
+	const db = c.env.db;
+	const table = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='app_migration'").first();
+	if (table && await db.prepare("SELECT version FROM app_migration WHERE version='upstream-v3.4'").first()) return;
+	const columns = (await db.prepare('PRAGMA table_info(email)').all()).results;
+	if (!columns.length) throw new Error('Database not initialized; run /api/init/:secret');
+	const statements = [db.prepare(schema[0])];
+	if (!columns.some(column => column.name === 'sender_email'))
+		statements.push(db.prepare("ALTER TABLE email ADD COLUMN sender_email TEXT NOT NULL DEFAULT ''"));
+	statements.push(db.prepare("INSERT INTO app_migration(version) VALUES ('upstream-v3.4')"));
+	try {
+		await db.batch(statements);
+	} catch {
+		const exists = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='app_migration'").first();
+		if (exists && await db.prepare("SELECT version FROM app_migration WHERE version='upstream-v3.4'").first()) return;
+		throw new Error('Upstream v3.4 schema preparation failed and rolled back');
+	}
+}
+
 // Schema preparation is independent of legacy configuration validity, so mail
 // storage and login continue even when an administrator must repair a legacy target.
 export async function ensureV34Schema(c) {
+	await ensureUpstreamV34Schema(c);
 	const db = c.env.db;
 	const table = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='app_migration'").first();
 	if (table && (await db.prepare("SELECT version FROM app_migration WHERE version='v3.4-schema'").first())) return;
