@@ -419,7 +419,8 @@ describe('Administrator mailbox view and ownership boundaries', () => {
 		await addRule('Mailbox rule', [a.accountId], [target]);
 		await upgrade();
 		await sql("UPDATE email SET text='Historical body',content='<p>Historical body</p>' WHERE account_id=?", a.accountId);
-		const snapshot = async () => Promise.all(['account', 'user', 'email', 'attachments', 'star', 'push_rule_account', 'mailbox_login_upgrade'].map(table => sql(`SELECT * FROM ${table}`)));
+		// Compare all persisted rows, not volatile D1 query timing metadata.
+		const snapshot = async () => Promise.all(['account', 'user', 'email', 'attachments', 'star', 'push_rule_account', 'mailbox_login_upgrade'].map(async table => (await sql(`SELECT * FROM ${table}`)).results));
 		const before = await snapshot();
 		for (const emailId of [10, 11]) {
 			const detail = await emailService.adminDetail(c, {accountId: a.accountId, emailId});
@@ -627,6 +628,7 @@ describe('Destination/rule matching and delivery', () => {
 			['GET', 'mailbox-login/accounts'],
 			['POST', 'push/simulate', { recipient: a.email }],
 			['POST', 'push/destinations/x/test'],
+			['POST', 'push/logs/1/retry'],
 			['POST', 'mailbox-login/enable', { accountId: b.accountId }],
 			['GET', 'setting/query'],
 		]) {
@@ -725,6 +727,172 @@ describe('Destination/rule matching and delivery', () => {
 		);
 		await pushService.cleanup(c);
 		expect((await first('SELECT count(*) AS n FROM push_delivery_log')).n).toBe(0);
+	});
+});
+
+describe('Delivery log pagination and targeted retry', () => {
+	beforeEach(async () => {
+		await sql('UPDATE email SET to_email=?,send_email=?,name=?,text=?,content=?,subject=? WHERE email_id=10',
+			a.email, 'original@outside.org', 'Original sender', 'Original body', '<p>Original body</p>', 'Original subject');
+		fetchMock.activate();
+		fetchMock.disableNetConnect();
+	});
+	afterEach(() => {
+		try { fetchMock.assertNoPendingInterceptors(); }
+		finally { fetchMock.deactivate(); }
+	});
+	async function log(type = 'telegram', config = tgConfig(tg1), status = 'failed') {
+		const destinationId = await addTarget('Original target', type, config);
+		const id = await pushRouterService.record(c, { emailId: 10 }, a.email, { id: destinationId, type }, { status, attempts: 1, error: 'Original result' });
+		return { id, destinationId };
+	}
+	it('defaults to ten newest records and exposes all pages beyond the old 100-record limit', async () => {
+		await env.db.batch(Array.from({ length: 105 }, () => env.db.prepare(
+			"INSERT INTO push_delivery_log(email_id,recipient,destination_id,type,status) VALUES (10,?,'gone','telegram','failed')"
+		).bind(a.email)));
+		const page = await pushService.logs(c);
+		expect(page).toMatchObject({ total: 105, page: 1, size: 10 });
+		expect(page.list.map(row => row.id)).toEqual([105, 104, 103, 102, 101, 100, 99, 98, 97, 96]);
+		const last = await pushService.logs(c, { page: '999', size: '10' });
+		expect(last).toMatchObject({ total: 105, page: 11, size: 10 });
+		expect(last.list.map(row => row.id)).toEqual([5, 4, 3, 2, 1]);
+	});
+	it('handles empty logs and rejects malformed pagination', async () => {
+		expect(await pushService.logs(c)).toEqual({ list: [], total: 0, page: 1, size: 10 });
+		for (const params of [{ page: '-1' }, { size: '0' }, { page: '1x' }, { size: '1.5' }])
+			await expect(pushService.logs(c, params)).rejects.toThrow('pagination');
+	});
+	it('retries only the recorded email and target, preserving history even when routing rules change', async () => {
+		const { id, destinationId } = await log();
+		const other = await addTarget('Other target', 'telegram', tgConfig(tg2));
+		await addRule('New rule', [a.accountId], [other]);
+		let body;
+		fetchMock.get('https://api.telegram.org').intercept({ method: 'POST', path: `/bot${tg1}/sendMessage` })
+			.reply(options => { body = JSON.parse(options.body); return { statusCode: 200, data: '{"ok":true}' }; });
+		const result = await pushRouterService.retry(c, String(id));
+		expect(result).toMatchObject({ status: 'success', attempts: 1, error: '' });
+		expect(body.chat_id).toBe('123456');
+		expect(body.text).toContain('Original subject');
+		expect(body.text).toContain('Original body');
+		const viewToken = new URL(body.reply_markup.inline_keyboard[0][0].web_app.url).pathname.split('/').pop();
+		expect(await jwtUtils.verifyToken(c, viewToken)).toMatchObject({ emailId: 10, destinationId });
+		expect(await first('SELECT * FROM push_delivery_log WHERE id=?', id)).toMatchObject({ status: 'failed', error: 'Original result' });
+		expect(await first('SELECT * FROM push_delivery_log WHERE id=?', result.logId)).toMatchObject({ email_id: 10, destination_id: destinationId, recipient: a.email, status: 'success' });
+		expect((await first('SELECT count(*) AS n FROM push_delivery_log')).n).toBe(2);
+	});
+	it('retries a Webhook with the stored body and the original target only', async () => {
+		const { id, destinationId } = await log('webhook', { url: 'https://notify.example.net/original', timeout: 1000, retry: 0 });
+		for (const type of ['A', 'AAAA']) fetchMock.get('https://cloudflare-dns.com')
+			.intercept({ path: `/dns-query?name=notify.example.net&type=${type}` })
+			.reply(200, JSON.stringify({ Status: 0, Answer: [{ type: 1, data: '8.8.8.8' }] }));
+		let body;
+		fetchMock.get('https://notify.example.net').intercept({ method: 'POST', path: '/original' })
+			.reply(options => { body = JSON.parse(options.body); return { statusCode: 200, data: '' }; });
+		expect(await pushRouterService.retry(c, id)).toMatchObject({ status: 'success' });
+		expect(body).toMatchObject({ emailId: 10, destinationId, toEmail: a.email, sendEmail: 'original@outside.org', subject: 'Original subject', text: 'Original body', content: '<p>Original body</p>' });
+	});
+	it('API paging uses query parameters and retry ignores forged email and target IDs in the request body', async () => {
+		const { id, destinationId } = await log();
+		const other = await addTarget('Other', 'telegram', tgConfig(tg2));
+		const token = await loginService.login(context(), { email: env.admin, password });
+		const listResponse = await worker.fetch(new Request('https://mail.example.com/api/push/logs?page=1&size=1', {
+			headers: { Authorization: token },
+		}), env, {});
+		expect((await listResponse.json()).data).toMatchObject({ total: 1, page: 1, size: 1, list: [{ id, destination_name: 'Original target', retry_reason: '' }] });
+		let body;
+		fetchMock.get('https://api.telegram.org').intercept({ method: 'POST', path: `/bot${tg1}/sendMessage` })
+			.reply(options => { body = JSON.parse(options.body); return { statusCode: 200, data: '{"ok":true}' }; });
+		const response = await worker.fetch(new Request(`https://mail.example.com/api/push/logs/${id}/retry`, {
+			method: 'POST', headers: { Authorization: token, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ emailId: 12, destinationId: other }),
+		}), env, {});
+		expect((await response.json()).data).toMatchObject({ status: 'success' });
+		expect(body.text).toContain('Original subject');
+		expect(await first('SELECT email_id,destination_id FROM push_delivery_log ORDER BY id DESC LIMIT 1')).toEqual({ email_id: 10, destination_id: destinationId });
+	});
+	it('uses the original target current configuration and the current mailbox owner', async () => {
+		const { id, destinationId } = await log();
+		const owner = await upgrade();
+		await pushService.saveDestination(c, { id: destinationId, name: 'Updated target', type: 'telegram', enabled: true,
+			config: { ...tgConfig(tg1), chatIds: ['7654321'] } });
+		let body;
+		fetchMock.get('https://api.telegram.org').intercept({ method: 'POST', path: `/bot${tg1}/sendMessage` })
+			.reply(options => { body = JSON.parse(options.body); return { statusCode: 200, data: '{"ok":true}' }; });
+		expect(await pushRouterService.retry(c, id)).toMatchObject({ status: 'success' });
+		expect(body.chat_id).toBe('7654321');
+		const token = new URL(body.reply_markup.inline_keyboard[0][0].web_app.url).pathname.split('/').pop();
+		expect(await jwtUtils.verifyToken(c, token)).toMatchObject({ emailId: 10, destinationId, userId: owner.userId, accountId: a.accountId });
+	});
+	it('rejects a recipient that changes between eligibility lookup and loading the original mail', async () => {
+		const { id } = await log();
+		const selectById = emailService.selectById.bind(emailService);
+		vi.spyOn(emailService, 'selectById').mockImplementation(async (context, emailId) => {
+			await sql("UPDATE email SET to_email='other@example.com' WHERE email_id=10");
+			return selectById(context, emailId);
+		});
+		await expect(pushRouterService.retry(c, id)).rejects.toThrow();
+		expect((await first('SELECT count(*) AS n FROM push_delivery_log')).n).toBe(1);
+	});
+	it.each([
+		['deleted email', 'UPDATE email SET is_del=1 WHERE email_id=10'],
+		['saving email', 'UPDATE email SET status=6 WHERE email_id=10'],
+		['sent email', 'UPDATE email SET type=1 WHERE email_id=10'],
+		['deleted mailbox', 'UPDATE account SET is_del=1 WHERE account_id=(SELECT account_id FROM email WHERE email_id=10)'],
+		['deleted owner', 'UPDATE user SET is_del=1 WHERE user_id=1'],
+		['recipient mismatch', "UPDATE push_delivery_log SET recipient='other@example.com'"],
+		['disabled target', 'UPDATE push_destination SET enabled=0'],
+		['deleted target', 'DELETE FROM push_destination'],
+		['target type mismatch', "UPDATE push_delivery_log SET type='webhook'"],
+	])('blocks %s without sending or changing history', async (_, query) => {
+		const { id } = await log();
+		await sql(query);
+		await expect(pushRouterService.retry(c, id)).rejects.toThrow();
+		expect((await first('SELECT count(*) AS n FROM push_delivery_log')).n).toBe(1);
+	});
+	it('explains why email forwarding and connection-test records cannot be retried', async () => {
+		const { id } = await log('email', { recipients: ['external@outside.org'] });
+		await expect(pushRouterService.retry(c, id)).rejects.toThrow('original');
+		expect((await pushService.logs(c)).list[0].retry_reason).toBe('original');
+		await sql('UPDATE push_delivery_log SET email_id=NULL WHERE id=?', id);
+		await expect(pushRouterService.retry(c, id)).rejects.toThrow('test');
+		const page = await pushService.logs(c);
+		expect(page.list[0].retry_reason).toBe('test');
+	});
+	it('blocks a recent pending delivery but permits a stale interrupted one', async () => {
+		const { id } = await log('telegram', tgConfig(tg1), 'pending');
+		await expect(pushRouterService.retry(c, id)).rejects.toThrow('progress');
+		await sql("UPDATE push_delivery_log SET created_at=datetime('now','-2 minutes') WHERE id=?", id);
+		fetchMock.get('https://api.telegram.org').intercept({ method: 'POST', path: `/bot${tg1}/sendMessage` }).reply(200, '{"ok":true}');
+		expect(await pushRouterService.retry(c, id)).toMatchObject({ status: 'success' });
+	});
+	it('atomically excludes a second in-flight retry across worker requests', async () => {
+		const { id } = await log();
+		let release, started;
+		const inFlight = new Promise(resolve => { release = resolve; });
+		const pending = new Promise(resolve => { started = resolve; });
+		// Only this concurrency test pauses the transport; payload tests above keep native fetch.
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async () => { started(); await inFlight; return Response.json({ ok: true }); });
+		const firstRetry = pushRouterService.retry(c, id);
+		await pending;
+		try {
+			await expect(pushRouterService.retry(context(), id)).rejects.toThrow('progress');
+		} finally { release(); }
+		expect(await firstRetry).toMatchObject({ status: 'success' });
+		expect((await first('SELECT count(*) AS n FROM push_delivery_log')).n).toBe(2);
+	});
+	it('records transport failure without rewriting the original outcome', async () => {
+		const { id } = await log();
+		fetchMock.get('https://api.telegram.org').intercept({ method: 'POST', path: `/bot${tg1}/sendMessage` }).reply(401, 'private token');
+		const result = await pushRouterService.retry(c, id);
+		expect(result.status).toBe('failed');
+		expect(result.error).not.toContain('private token');
+		expect(await first('SELECT status,error FROM push_delivery_log WHERE id=?', id)).toEqual({ status: 'failed', error: 'Original result' });
+		expect(await first('SELECT status FROM push_delivery_log WHERE id=?', result.logId)).toEqual({ status: 'failed' });
+	});
+	it('requires administrator access before reading retry data and validates IDs', async () => {
+		await expect(pushRouterService.retry(context({ userId: 9, email: 'other@example.com' }), 1)).rejects.toThrow('Administrator');
+		for (const id of ['1x', -1, 0, '9007199254740992']) await expect(pushRouterService.retry(c, id)).rejects.toThrow('ID');
+		await expect(pushRouterService.retry(c, 99999)).rejects.toThrow('not found');
 	});
 });
 

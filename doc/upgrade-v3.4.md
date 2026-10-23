@@ -107,6 +107,14 @@ wrangler-unit.toml 是独立 Worker 测试配置，不需要先构建前端；wr
 
 `View` 沿用 Telegram [内嵌 Web App 按钮](https://core.telegram.org/bots/api#inlinekeyboardbutton)，在与机器人的私聊中直接打开邮件；无需登录，链接 15 分钟有效。修复发布后对新邮件通知生效，已发送的历史消息不会补加按钮；不涉及数据库迁移或 Token/Secret 变更。
 
+## 投递记录分页与再次投递
+
+- 投递记录按 ID 倒序在服务端分页，默认每页 10 条，可查看保留期内的全部记录。`GET /api/push/logs?page=1&size=10` 返回 `{list,total,page,size}`；size 上限 100，超出末页会回落最后一页。列表包含邮件主题、当前目标名称及不可重投原因。翻页请求失败时恢复最后成功页码，避免页码与旧记录错配。
+- `POST /api/push/logs/:id/retry` 仅限管理员，只根据原记录的 email_id / destination_id 读取原邮件及目标当前启用配置，忽略客户端指定的其他邮件或目标，不重新匹配规则。原结果保留，新增一条 pending 记录，并最终写入 success / partial / failed；界面按实际结果提示并刷新当前页。
+- 支持 Telegram/Webhook；邮箱转发因未保存原始 MIME、无法重建原收信事件的 forward 能力而不可重投。连接测试、已删除邮件/邮箱/所有者、已删除或停用目标、目标类型及收件人不符时同样拒绝，并在记录旁说明原因。
+- 发送前重新校验当前邮件归属、收件人、目标类型及配置。通过 D1 原子条件插入阻止同邮件、同目标在 60 秒内存在另一条 pending 投递；前端同时禁止重复点击。中断超过 60 秒的 pending 可人工再次投递；若上次实际已送达但未写入结果，人工重投仍可能产生重复通知。
+- 无表结构或迁移变更，不新增发件服务、Queue 或 Secret。本地测试使用原生 Workers fetchMock，未发送真实通知。
+
 ## 执行与安全边界
 
 - 沿用既有 Salt + SHA-256 密码机制，不存明文。新独立密码及重置密码须 8–128 位；注册流程沿用原约束。
@@ -116,7 +124,7 @@ wrangler-unit.toml 是独立 Worker 测试配置，不需要先构建前端；wr
 - Webhook 要求公共 HTTPS DNS 域名，拒绝字面 IP/localhost/私网 DNS/重定向，不把响应正文或认证信息写入错误；A/AAAA 通过 Cloudflare DoH 检查。DNS检查与 fetch 之间无法在 Workers 中绑定同一目标 IP，存在 DNS 重绑定的剩余边界，只配置可信域名；需要更严隔离时增加平台级出口策略。
 - Cloudflare [目标地址验证](https://developers.cloudflare.com/email-service/configuration/email-routing-addresses/)须事先完成；本站域名被拒绝以避免循环。目标内部分收件人失败记录 partial，其他目标继续执行。
 - 推送在邮件事件内 await，第三方转发保持原始邮件及附件，不依赖无限 waitUntil。Webhook 最多额外重试 2 次、每次 1–5 秒；Telegram 请求 5 秒超时。没有 Queues，因此不存在持久重试/恰好一次投递保证；平台重复投递、超时后对端实际接收可能造成事件间重复。
-- 日志 pending 表示尚未完成或事件被中断；成功/失败/部分失败会记录最终状态，保留 30 天，管理员界面展示最近 100 条。日志不存邮件正文、Token、Secret；高流量需监控 D1 容量和清理耗时。
+- 日志 pending 表示尚未完成或事件被中断；成功/失败/部分失败会记录最终状态，保留 30 天，管理员界面默认每页展示 10 条。日志不存邮件正文、Token、Secret；高流量需监控 D1 容量和清理耗时。
 - 第三方网络测试使用 Mock，不验证真实 Bot 权限、Chat ID、Webhook 服务可达性或 Cloudflare 邮件目标验证状态。桌面/移动端通过本地浏览器检查，不属于真机或生产验收。
 
 ## 恢复方案

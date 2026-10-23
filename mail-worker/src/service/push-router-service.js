@@ -4,6 +4,18 @@ import webhookService from './webhook-service';
 import { normalizeEmail, validateDestination } from './push-validation';
 import { requireAdmin } from '../security/admin';
 import BizError from '../error/biz-error';
+import emailService from './email-service';
+
+const retryErrors = {
+	test: 'Connection test records cannot be retried / 连接测试记录不能再次投递',
+	original: 'Email forwarding requires the original email stream / 邮箱转发缺少原始邮件流，不能再次投递',
+	target_missing: 'Original destination not found / 原推送目标已删除',
+	target_changed: 'Original destination type changed / 推送目标类型与原记录不符',
+	target_disabled: 'Original destination disabled / 原推送目标已停用',
+	mail_unavailable: 'Original received email or mailbox unavailable / 原收件邮件、邮箱或所属用户已不可用',
+	recipient_mismatch: 'Original email recipient mismatch / 邮件收件人与原投递记录不符',
+	pending: 'Delivery in progress; retry later / 该邮件正在投递，请稍后重试',
+};
 
 const pushRouterService = {
 	async record(c, emailRow, recipient, destination, outcome, logId) {
@@ -76,6 +88,39 @@ const pushRouterService = {
 				}
 			}),
 		);
+	},
+	async retry(c, id) {
+		requireAdmin(c);
+		id = Number(id);
+		if (!Number.isSafeInteger(id) || id < 1) throw new BizError('Invalid delivery log ID / 投递记录 ID 无效', 400);
+		const log = await pushService.deliveryLog(c, id);
+		if (!log) throw new BizError('Delivery log not found / 投递记录不存在', 404);
+		if (log.retry_reason) throw new BizError(retryErrors[log.retry_reason], 409);
+		const emailRow = await emailService.selectById(c, log.email_id);
+		const destination = await c.env.db.prepare('SELECT * FROM push_destination WHERE id=?').bind(log.destination_id).first();
+		if (!emailRow || !destination) throw new BizError('Original email or destination changed; refresh / 原邮件或目标已变化，请刷新', 409);
+		if (normalizeEmail(emailRow.toEmail) !== normalizeEmail(log.recipient))
+			throw new BizError(retryErrors.recipient_mismatch, 409);
+		const storedConfig = destination.config;
+		destination.config = validateDestination(destination.type, JSON.parse(storedConfig), c.env);
+		// The conditional insert is the cross-request lock. Match the captured target
+		// configuration and current ownership again before any external side effect.
+		const claim = await c.env.db.prepare(`INSERT INTO push_delivery_log(email_id,recipient,destination_id,type,status,attempts,error)
+		 SELECT e.email_id,?,d.id,d.type,'pending',0,'' FROM email e JOIN push_destination d ON d.id=?
+		 WHERE e.email_id=? AND e.is_del=0 AND e.type=0 AND e.status IN (0,7)
+		 AND e.account_id=? AND e.user_id=? AND e.to_email=? AND d.enabled=1 AND d.type=? AND d.config=?
+		 AND ((e.account_id=0 AND e.user_id=0 AND e.status=7) OR EXISTS(
+		 SELECT 1 FROM account a JOIN user u ON u.user_id=a.user_id
+		 WHERE a.account_id=e.account_id AND a.user_id=e.user_id AND a.is_del=0 AND u.is_del=0))
+		 AND EXISTS(SELECT 1 FROM push_delivery_log l WHERE l.id=? AND l.email_id=e.email_id AND l.destination_id=d.id AND l.type=d.type AND l.recipient=?)
+		 AND NOT EXISTS(SELECT 1 FROM push_delivery_log p WHERE p.email_id=e.email_id AND p.destination_id=d.id
+		 AND p.status='pending' AND p.created_at>=datetime('now','-60 seconds')) RETURNING id`)
+			.bind(log.recipient, destination.id, emailRow.emailId, emailRow.accountId, emailRow.userId, emailRow.toEmail,
+				log.type, storedConfig, id, log.recipient).first();
+		if (!claim) throw new BizError('Delivery in progress or source/target changed; refresh / 正在投递或原邮件、目标已变化，请刷新', 409);
+		const outcome = await this.deliver(c, emailRow, destination);
+		await this.record(c, emailRow, log.recipient, destination, outcome, claim.id);
+		return { logId: claim.id, ...outcome };
 	},
 	async test(c, id) {
 		requireAdmin(c);

@@ -18,6 +18,7 @@ app.delete('/push/rules/:id', async (c) => {
 	return c.json(result.ok());
 });
 app.post('/push/simulate', async (c) => c.json(result.ok(await pushService.simulate(c, (await c.req.json()).recipient))));
-app.get('/push/logs', async (c) => c.json(result.ok(await pushService.logs(c))));
+app.get('/push/logs', async (c) => c.json(result.ok(await pushService.logs(c, c.req.query()))));
+app.post('/push/logs/:id/retry', async (c) => c.json(result.ok(await pushRouterService.retry(c, c.req.param('id')))));
 app.get('/mailbox-login/accounts', async (c) => c.json(result.ok(await mailboxLoginService.list(c, c.req.query()))));
 app.post('/mailbox-login/enable', async (c) => c.json(result.ok(await mailboxLoginService.enable(c, await c.req.json()))));

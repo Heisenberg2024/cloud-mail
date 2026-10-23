@@ -125,18 +125,22 @@
 					<el-button @click="loadLogs">{{ t('pushRefresh') }}</el-button
 					><span>{{ t('pushRetention') }}</span>
 				</div>
-				<el-table :data="logs"
+				<el-table :data="logs" v-loading="logsLoading"
 					><el-table-column
 						prop="email_id"
 						label="Email ID"
 						width="90" /><el-table-column
+						prop="subject"
+						:label="t('subject')"
+						min-width="180"
+						show-overflow-tooltip /><el-table-column
 						prop="recipient"
 						:label="t('recipient')"
 						min-width="190" /><el-table-column
 						:label="t('pushDestinations')"
 						min-width="140"
 						><template #default="{ row }">{{
-							targets.find((d) => d.id === row.destination_id)?.name ||
+							row.destination_name ||
 							row.destination_id
 						}}</template></el-table-column
 					><el-table-column
@@ -152,7 +156,30 @@
 						prop="created_at"
 						:label="t('pushTime')"
 						min-width="170"
-				/></el-table>
+					/><el-table-column :label="t('action')" min-width="190">
+						<template #default="{ row }">
+							<el-button
+								size="small"
+								:loading="retrying === row.id"
+								:disabled="!!retrying || !!row.retry_reason"
+								@click="retryLog(row)"
+							>{{ t('pushRetry') }}</el-button>
+							<el-text v-if="row.retry_reason" class="retry-reason" type="info" size="small">{{
+								t('pushRetryReason_' + row.retry_reason)
+							}}</el-text>
+						</template>
+					</el-table-column>
+				</el-table>
+				<el-pagination
+					class="log-pagination"
+					v-model:current-page="logPage"
+					:page-size="10"
+					:total="logTotal"
+					:pager-count="5"
+					layout="prev,pager,next,total"
+					:disabled="logsLoading"
+					@current-change="loadLogs"
+				/>
 			</el-tab-pane>
 		</el-tabs>
 		<el-dialog
@@ -379,6 +406,10 @@ const loading = ref(false),
 	ruleList = ref([]),
 	logs = ref([]),
 	tab = ref('destinations');
+const logPage = ref(1),
+	logTotal = ref(0),
+	logsLoading = ref(false),
+	retrying = ref(0);
 const destinationShow = ref(false),
 	ruleShow = ref(false),
 	testResult = ref(null),
@@ -397,7 +428,9 @@ const accountOptions = ref([]),
 	simulating = ref(false);
 let timer,
 	sequence = 0,
-	accountSequence = 0;
+	accountSequence = 0,
+	logSequence = 0,
+	loadedLogPage = 1;
 async function load() {
 	loading.value = true;
 	try {
@@ -555,7 +588,47 @@ async function removeRule(r) {
 	await run(() => api.deleteRule(r.id));
 }
 async function loadLogs() {
-	logs.value = await api.deliveryLogs();
+	const current = ++logSequence;
+	logsLoading.value = true;
+	try {
+		const result = await api.deliveryLogs({ page: logPage.value, size: 10 });
+		if (current !== logSequence) return;
+		logs.value = result.list;
+		logTotal.value = result.total;
+		logPage.value = result.page;
+		loadedLogPage = result.page;
+	} catch (error) {
+		if (current === logSequence) logPage.value = loadedLogPage;
+		throw error;
+	} finally {
+		if (current === logSequence) logsLoading.value = false;
+	}
+}
+async function retryLog(row) {
+	if (retrying.value || row.retry_reason) return;
+	retrying.value = row.id;
+	try {
+		try {
+			await ElMessageBox.confirm(t('pushRetryConfirm', {
+				emailId: row.email_id,
+				subject: row.subject || '',
+				target: row.destination_name || row.destination_id,
+			}), t('pushRetry'));
+		} catch {
+			return;
+		}
+		try {
+			const outcome = await api.retryDelivery(row.id);
+			ElMessage({
+				message: t('pushRetryResult_' + outcome.status) + (outcome.error ? ': ' + outcome.error : ''),
+				type: outcome.status === 'success' ? 'success' : outcome.status === 'partial' ? 'warning' : 'error',
+			});
+		} finally {
+			await loadLogs();
+		}
+	} finally {
+		retrying.value = 0;
+	}
 }
 watch(tab, (value) => {
 	if (value === 'logs') loadLogs();
@@ -580,6 +653,7 @@ onBeforeUnmount(() => {
 	clearTimeout(timer);
 	sequence++;
 	accountSequence++;
+	logSequence++;
 });
 onMounted(load);
 </script>
@@ -608,6 +682,15 @@ onMounted(load);
 }
 .simulation {
 	overflow-wrap: anywhere;
+}
+.retry-reason {
+	display: block;
+	line-height: 1.5;
+	margin-top: 4px;
+}
+.log-pagination {
+	margin-top: 16px;
+	flex-wrap: wrap;
 }
 .el-alert {
 	margin: 10px 0;

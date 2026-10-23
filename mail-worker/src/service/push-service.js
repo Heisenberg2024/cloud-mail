@@ -21,6 +21,30 @@ function enabledValue(value) {
 	throw new BizError('Invalid enabled state', 400);
 }
 
+const logSelect = `SELECT l.*,d.name AS destination_name,d.type AS target_type,d.enabled AS target_enabled,
+	 e.subject,e.to_email AS mail_recipient,
+	 CASE WHEN e.email_id IS NOT NULL AND e.is_del=0 AND e.type=0 AND e.status IN (0,7) AND
+	 ((e.account_id=0 AND e.user_id=0 AND e.status=7) OR
+	 (a.is_del=0 AND u.is_del=0 AND a.user_id=e.user_id)) THEN 1 ELSE 0 END AS mail_available,
+	 EXISTS(SELECT 1 FROM push_delivery_log p WHERE p.email_id=l.email_id AND p.destination_id=l.destination_id
+	 AND p.status='pending' AND p.created_at>=datetime('now','-60 seconds')) AS delivery_pending
+	 FROM push_delivery_log l LEFT JOIN push_destination d ON d.id=l.destination_id
+	 LEFT JOIN email e ON e.email_id=l.email_id LEFT JOIN account a ON a.account_id=e.account_id
+	 LEFT JOIN user u ON u.user_id=e.user_id`;
+
+function annotateLog(row) {
+	const { target_type, target_enabled, mail_recipient, mail_available, delivery_pending, ...log } = row;
+	const retry_reason = !log.email_id ? 'test'
+		: !['telegram', 'webhook'].includes(log.type) ? 'original'
+		: !target_type ? 'target_missing'
+		: target_type !== log.type ? 'target_changed'
+		: !target_enabled ? 'target_disabled'
+		: !mail_available ? 'mail_unavailable'
+		: !normalizeEmail(log.recipient) || normalizeEmail(log.recipient) !== normalizeEmail(mail_recipient) ? 'recipient_mismatch'
+		: delivery_pending ? 'pending' : '';
+	return { ...log, retry_reason };
+}
+
 const pushService = {
 	async initialized(c) {
 		await upgradeV34(c);
@@ -192,9 +216,21 @@ const pushService = {
 		const result = await this.resolve(c, recipient);
 		return { ...result, destinations: result.destinations.map(redactDestination) };
 	},
-	async logs(c) {
+	async logs(c, params = {}) {
 		requireAdmin(c);
-		return rows(c.env.db, 'SELECT * FROM push_delivery_log ORDER BY id DESC LIMIT 100');
+		const requestedPage = Number(params.page ?? 1), requestedSize = Number(params.size ?? 10);
+		if (!Number.isSafeInteger(requestedPage) || requestedPage < 1 || !Number.isSafeInteger(requestedSize) || requestedSize < 1)
+			throw new BizError('Invalid log pagination / 投递记录分页参数无效', 400);
+		const size = Math.min(100, requestedSize);
+		const { total } = await c.env.db.prepare('SELECT count(*) AS total FROM push_delivery_log').first();
+		const page = Math.min(requestedPage, Math.max(1, Math.ceil(total / size)));
+		const list = await rows(c.env.db, `${logSelect} ORDER BY l.id DESC LIMIT ? OFFSET ?`, size, (page - 1) * size);
+		return { list: list.map(annotateLog), total, page, size };
+	},
+	async deliveryLog(c, id) {
+		requireAdmin(c);
+		const row = await c.env.db.prepare(`${logSelect} WHERE l.id=?`).bind(id).first();
+		return row ? annotateLog(row) : null;
 	},
 	async cleanup(c) {
 		await c.env.db.prepare("DELETE FROM push_delivery_log WHERE created_at < datetime('now','-30 days')").run();

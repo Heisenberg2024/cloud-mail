@@ -11,7 +11,9 @@ export const deleteRule = (id) =>
 	http.delete(`/push/rules/${encodeURIComponent(id)}`);
 export const simulate = (recipient) =>
 	http.post('/push/simulate', { recipient });
-export const deliveryLogs = () => http.get('/push/logs');
+export const deliveryLogs = (params) => http.get('/push/logs', { params });
+export const retryDelivery = (id) =>
+	http.post(`/push/logs/${encodeURIComponent(id)}/retry`);
 export const mailboxes = (params) =>
 	http.get('/mailbox-login/accounts', { params });
 export const enableLogin = (data) => http.post('/mailbox-login/enable', data);

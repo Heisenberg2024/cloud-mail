@@ -223,3 +223,104 @@ test('local HTTP development never defaults Telegram viewing to an unsupported H
   assert.equal(view.targetForm.config.customDomain, '');
   view.stop();
 });
+
+function pushManager(bindings = {}, returned = '') {
+  return setup('../src/components/push-manager/index.vue', {
+    onBeforeUnmount() {}, window: {location: {origin: 'https://current.example.com'}},
+    ...bindings,
+  }, returned);
+}
+
+test('delivery log pagination requests ten rows and ignores late responses from an earlier page', async () => {
+  const requests = [];
+  const view = pushManager({api: {deliveryLogs: params => {
+    const request = deferred(); requests.push({params, ...request}); return request.promise;
+  }}}, 'loadLogs, logPage, logTotal, logs, logsLoading');
+  const firstPage = view.loadLogs();
+  assert.deepEqual(requests[0].params, {page: 1, size: 10});
+  view.logPage.value = 2;
+  const secondPage = view.loadLogs();
+  assert.deepEqual(requests[1].params, {page: 2, size: 10});
+  requests[1].resolve({list: [{id: 20}], total: 21, page: 2}); await secondPage;
+  requests[0].resolve({list: [{id: 30}], total: 30, page: 1}); await firstPage;
+  assert.deepEqual(view.logs.value, [{id: 20}]);
+  assert.equal(view.logPage.value, 2);
+  assert.equal(view.logTotal.value, 21);
+  assert.equal(view.logsLoading.value, false);
+  view.stop();
+});
+
+test('delivery log reload adopts the last valid page after old rows are cleaned', async () => {
+  const view = pushManager({api: {deliveryLogs: async () => ({list: [{id: 1}], total: 1, page: 1})}},
+    'loadLogs, logPage, logTotal');
+  view.logPage.value = 3;
+  await view.loadLogs();
+  assert.equal(view.logPage.value, 1);
+  assert.equal(view.logTotal.value, 1);
+  view.stop();
+});
+
+test('a failed delivery log page request restores the last loaded page and keeps its rows aligned', async () => {
+  let fail = false;
+  const view = pushManager({api: {deliveryLogs: async () => {
+    if (fail) throw new Error('Page request failed');
+    return {list: [{id: 105}], total: 105, page: 1};
+  }}}, 'loadLogs, logPage, logTotal, logs, logsLoading');
+  await view.loadLogs();
+  fail = true;
+  view.logPage.value = 2;
+  await assert.rejects(view.loadLogs(), /Page request failed/);
+  assert.equal(view.logPage.value, 1);
+  assert.deepEqual(view.logs.value, [{id: 105}]);
+  assert.equal(view.logTotal.value, 105);
+  assert.equal(view.logsLoading.value, false);
+  view.stop();
+});
+
+test('retry sends only the clicked log ID, blocks duplicate clicks and refreshes its current page', async () => {
+  const sent = [], notices = [], pages = [];
+  const request = deferred();
+  const view = pushManager({
+    api: {retryDelivery: id => {sent.push(id); return request.promise;},
+      deliveryLogs: async params => {pages.push(params); return {list: [], total: 20, page: 2};}},
+    ElMessageBox: {confirm: async () => {}}, ElMessage: value => notices.push(value),
+  }, 'retryLog, retrying, logPage');
+  view.logPage.value = 2;
+  const operation = view.retryLog({id: 42, email_id: 10, destination_id: 'original', destination_name: 'Original target', subject: 'Original mail', retry_reason: ''});
+  await tick();
+  await view.retryLog({id: 42, retry_reason: ''});
+  assert.deepEqual(sent, [42]);
+  request.resolve({status: 'partial', error: 'One chat failed'}); await operation;
+  assert.equal(notices[0].type, 'warning');
+  assert.match(notices[0].message, /One chat failed/);
+  assert.deepEqual(pages, [{page: 2, size: 10}]);
+  assert.equal(view.retrying.value, 0);
+  view.stop();
+});
+
+test('unavailable retries and cancelled confirmations do not send anything', async () => {
+  let calls = 0;
+  const view = pushManager({api: {retryDelivery: () => {calls++;}},
+    ElMessageBox: {confirm: async () => {throw new Error('cancel');}},
+  }, 'retryLog, retrying');
+  await view.retryLog({id: 1, retry_reason: 'original'});
+  await view.retryLog({id: 2, retry_reason: ''});
+  assert.equal(calls, 0);
+  assert.equal(view.retrying.value, 0);
+  view.stop();
+});
+
+test('retry API failure unlocks the action and reloads availability without claiming delivery success', async () => {
+  const notices = [];
+  let reloads = 0;
+  const view = pushManager({api: {
+    retryDelivery: async () => {throw new Error('Target changed');},
+    deliveryLogs: async () => {reloads++; return {list: [], total: 0, page: 1};},
+  }, ElMessageBox: {confirm: async () => {}}, ElMessage: value => notices.push(value)},
+  'retryLog, retrying');
+  await assert.rejects(view.retryLog({id: 2, retry_reason: ''}), /Target changed/);
+  assert.equal(reloads, 1);
+  assert.equal(view.retrying.value, 0);
+  assert.deepEqual(notices, []);
+  view.stop();
+});
