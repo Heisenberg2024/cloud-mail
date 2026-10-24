@@ -299,6 +299,63 @@ describe('Telegram in-app mail viewing', () => {
 	});
 });
 
+describe('Telegram group delivery regression', () => {
+	beforeEach(() => { fetchMock.activate(); fetchMock.disableNetConnect(); });
+	afterEach(() => {
+		try { fetchMock.assertNoPendingInterceptors(); }
+		finally { fetchMock.deactivate(); }
+	});
+	it('delivers all-mail and selected-mailbox targets with chat-compatible View links during real receive events', async () => {
+		await settingService.set(c, { customDomain: 'original.example.com' });
+		const all = await addTarget('All mail', 'telegram', tgConfig(tg1));
+		const selected = await addTarget('Selected group', 'telegram', { ...tgConfig(tg2), chatIds: ['-5150899672'], customDomain: '' });
+		await addRule('All mail', [], [all], true, 'all_registered');
+		await addRule('Selected mailbox', [a.accountId], [selected]);
+		const sent = [];
+		for (const [token, count] of [[tg1, 2], [tg2, 1]]) {
+			fetchMock.get('https://api.telegram.org')
+				.intercept({ method: 'POST', path: `/bot${token}/sendMessage` })
+				.reply(({ body }) => {
+					const request = JSON.parse(body);
+					sent.push(request);
+					const invalid = request.chat_id === '-5150899672' && request.reply_markup?.inline_keyboard.flat().some(button => button.web_app);
+					return { statusCode: invalid ? 400 : 200, data: JSON.stringify({ ok: !invalid }) };
+				}).times(count);
+		}
+		for (const recipient of [a.email, b.email]) {
+			const msg = message(recipient);
+			await receiveEvent(msg, env, {});
+			expect(msg.setReject).not.toHaveBeenCalled();
+		}
+		const logs = (await sql('SELECT email_id,recipient,destination_id,status,error FROM push_delivery_log')).results;
+		expect(logs).toHaveLength(3);
+		expect(logs).toEqual(expect.arrayContaining([
+			expect.objectContaining({ recipient: a.email, destination_id: all, status: 'success', error: '' }),
+			expect.objectContaining({ recipient: a.email, destination_id: selected, status: 'success', error: '' }),
+			expect.objectContaining({ recipient: b.email, destination_id: all, status: 'success', error: '' }),
+		]));
+		const group = sent.filter(request => request.chat_id === '-5150899672');
+		expect(group).toHaveLength(1);
+		const view = group[0].reply_markup.inline_keyboard[0][0];
+		expect(view.web_app).toBeUndefined();
+		const url = new URL(view.url);
+		expect(url.origin).toBe('https://original.example.com');
+		const payload = await jwtUtils.verifyToken(c, url.pathname.split('/').pop());
+		expect(payload).toMatchObject({
+			purpose: 'mail-view', emailId: logs.find(log => log.destination_id === selected).email_id,
+			accountId: a.accountId, userId: 1, destinationId: selected,
+		});
+		expect(payload.exp - payload.iat).toBe(900);
+		const response = await worker.fetch(new Request(url), env, {});
+		expect(await response.text()).toContain('Hello world');
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+		expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
+		expect(sent.filter(request => request.chat_id === '123456')).toHaveLength(2);
+		for (const request of sent.filter(request => request.chat_id === '123456'))
+			expect(request.reply_markup.inline_keyboard[0][0].web_app.url).toMatch(/^https:\/\/mail\.example\.com\/api\/telegram\/getEmail\//);
+	});
+});
+
 describe('Mailbox independent login and D1 ownership', () => {
 	it('keeps attached mailboxes without login credentials', async () => {
 		expect(await first('SELECT user_id FROM user WHERE email=?', a.email)).toBeNull();

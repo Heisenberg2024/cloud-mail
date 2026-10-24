@@ -2,6 +2,7 @@ import { env, fetchMock } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import telegramService from '../src/service/telegram-service';
 import webhookService from '../src/service/webhook-service';
+import jwtUtils from '../src/utils/jwt-utils';
 
 const token = '123456:abcdefghijklmnopqrstuvwxyz12345';
 const destination = {
@@ -53,6 +54,37 @@ describe('Native Workers outbound fetch compatibility', () => {
 			status: 'success',
 			chats: [{ chatId: '123456', chatValid: true, sent: true }],
 		});
+	});
+	it('uses compatible View buttons for private, group and channel chats within one destination', async () => {
+		const chatIds = ['-5150899672', '123456', '-1001234567890', '@mail_updates'];
+		const sent = [];
+		fetchMock.get('https://api.telegram.org')
+			.intercept({ method: 'POST', path: `/bot${token}/sendMessage` })
+			.reply(({ body }) => {
+				const request = JSON.parse(body);
+				sent.push(request);
+				const invalid = request.chat_id !== '123456' && request.reply_markup?.inline_keyboard.flat().some(button => button.web_app);
+				return { statusCode: invalid ? 400 : 200, data: JSON.stringify({ ok: !invalid }) };
+			}).times(chatIds.length);
+		const result = await telegramService.sendEmailToBot({ env }, { ...mail, accountId: 2, userId: 1, code: '123456' }, {
+			...destination,
+			config: { ...destination.config, chatIds, viewLink: true, customDomain: 'https://mail.example.com', showCode: true },
+		});
+		expect(result).toMatchObject({ status: 'success', attempts: 1, error: '' });
+		expect(sent.map(request => request.chat_id).sort()).toEqual([...chatIds].sort());
+		const urls = [];
+		for (const request of sent) {
+			const [view, copy] = request.reply_markup.inline_keyboard;
+			expect(copy).toEqual([{ text: '123456', copy_text: { text: '123456' } }]);
+			const url = request.chat_id === '123456' ? view[0].web_app.url : view[0].url;
+			expect(view).toEqual([{ text: 'View', ...(request.chat_id === '123456' ? { web_app: { url } } : { url }) }]);
+			expect(new URL(url).origin).toBe('https://mail.example.com');
+			urls.push(url);
+		}
+		expect(new Set(urls).size).toBe(1);
+		const payload = await jwtUtils.verifyToken({ env }, new URL(urls[0]).pathname.split('/').pop());
+		expect(payload).toMatchObject({ purpose: 'mail-view', emailId: 1, accountId: 2, userId: 1, destinationId: destination.id });
+		expect(payload.exp - payload.iat).toBe(900);
 	});
 	it('rejects Telegram redirects without following their private destination', async () => {
 		telegramReply('sendMessage', 302, '', { Location: 'http://127.0.0.1/secret' });

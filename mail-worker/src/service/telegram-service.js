@@ -87,7 +87,7 @@ const telegramService = {
 	},
 	async sendEmailToBot(c, emailRow, destination) {
 		const config = destination.config;
-		const keyboard = [];
+		let viewUrl = '';
 		let viewOrigin = config.customDomain || '';
 		if (config.viewLink !== false && !viewOrigin) {
 			const { customDomain } = await settingService.query(c);
@@ -109,19 +109,26 @@ const telegramService = {
 				},
 				900,
 			);
-			keyboard.push([{ text: 'View', web_app: { url: `${viewOrigin}/api/telegram/getEmail/${token}` } }]);
+			viewUrl = `${viewOrigin}/api/telegram/getEmail/${token}`;
 		}
-		if (config.showCode && emailRow.code && emailRow.code.length <= 256)
-			keyboard.push([{ text: emailRow.code, copy_text: { text: emailRow.code } }]);
 		const results = await Promise.all(
-			config.chatIds.map((chatId) =>
-				telegramRequest(config, 'sendMessage', {
+			config.chatIds.map((chatId) => {
+				const keyboard = [];
+				if (viewUrl) {
+					// Telegram only accepts web_app buttons in private bot chats.
+					// Groups/channels have negative IDs or use a public @username.
+					const link = /^[1-9]\d*$/.test(chatId) ? { web_app: { url: viewUrl } } : { url: viewUrl };
+					keyboard.push([{ text: 'View', ...link }]);
+				}
+				if (config.showCode && emailRow.code && emailRow.code.length <= 256)
+					keyboard.push([{ text: emailRow.code, copy_text: { text: emailRow.code } }]);
+				return telegramRequest(config, 'sendMessage', {
 					chat_id: chatId,
 					parse_mode: 'HTML',
 					text: emailMsgTemplate(emailRow, config.to, config.from, config.text),
 					...(keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {}),
-				}),
-			),
+				});
+			}),
 		);
 		return {
 			status: results.every((r) => r.ok) ? 'success' : results.some((r) => r.ok) ? 'partial' : 'failed',
